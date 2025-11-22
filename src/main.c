@@ -59,11 +59,24 @@ typedef struct {
 } number_t;
 
 // allocate number structure
+// Returns a number_t with digits set to NULL on allocation failure
 number_t allocate_number_array(base_t base, size_t length) {
   number_t num;
   num.proto.base = base;
   num.proto.length = length;
   num.proto.digits = (value_t *)malloc(length * sizeof(value_t));
+
+  // Check for allocation failure
+  if (num.proto.digits == NULL) {
+    fprintf(stderr, "Error: Failed to allocate memory for %zu digits\n",
+            length);
+    num.proto.length = 0;
+    num.is_negative = false;
+    num.decimal_length = 0;
+    num.repeating_length = 0;
+    return num;
+  }
+
   num.is_negative = false;
   num.decimal_length = 0;
   num.repeating_length = 0;
@@ -134,6 +147,12 @@ number_t initialize_number_from_string(const char *str, base_t base) {
   }
 
   number_t num = allocate_number_array(base, length_digits);
+
+  // Check if allocation failed
+  if (num.proto.digits == NULL) {
+    return num; // Return empty number on allocation failure
+  }
+
   size_t digit_index = 0;
   bool in_repeating = false;
   bool seen_decimal = false;
