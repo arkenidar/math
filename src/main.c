@@ -133,17 +133,107 @@ void display_number(const number_t *num) {
 // Number initialization function from formatted string e.g. "1A.3(45)" for base
 // 16 Note: This is a simplified version and does not handle all edge cases
 number_t initialize_number_from_string(const char *str, base_t base) {
-  // First pass: count valid digits only
+  // First pass: count valid digits and validate format
   size_t length_digits = 0;
+  bool seen_negative = false;
+  bool seen_decimal = false;
+  size_t digits_after_decimal = 0;
+  size_t digits_in_repeating = 0;
+  int paren_depth = 0;
+  bool in_repeating = false;
+
   for (size_t i = 0; str[i] != '\0'; i++) {
     char ch = str[i];
-    if (ch == '-' || ch == '.' || ch == '(' || ch == ')') {
-      continue; // Skip special characters
+
+    if (ch == '-') {
+      // Negative sign must be at the start
+      if (i != 0) {
+        fprintf(stderr,
+                "Error: Negative sign must be at the start of the number\n");
+        return allocate_number_array(base, 0); // Return empty number
+      }
+      if (seen_negative) {
+        fprintf(stderr, "Error: Multiple negative signs not allowed\n");
+        return allocate_number_array(base, 0);
+      }
+      seen_negative = true;
+      continue;
+    } else if (ch == '.') {
+      if (seen_decimal) {
+        fprintf(stderr, "Error: Multiple decimal points not allowed\n");
+        return allocate_number_array(base, 0);
+      }
+      // Check if there are digits before the decimal point
+      if (length_digits == 0) {
+        fprintf(
+            stderr,
+            "Error: Decimal point must have at least one digit before it\n");
+        return allocate_number_array(base, 0);
+      }
+      seen_decimal = true;
+      continue;
+    } else if (ch == '(') {
+      paren_depth++;
+      if (paren_depth > 1) {
+        fprintf(stderr, "Error: Nested parentheses not allowed\n");
+        return allocate_number_array(base, 0);
+      }
+      if (!seen_decimal) {
+        fprintf(stderr,
+                "Error: Repeating section must come after decimal point\n");
+        return allocate_number_array(base, 0);
+      }
+      in_repeating = true;
+      digits_in_repeating = 0;
+      continue;
+    } else if (ch == ')') {
+      paren_depth--;
+      if (paren_depth < 0) {
+        fprintf(stderr, "Error: Closing parenthesis without opening\n");
+        return allocate_number_array(base, 0);
+      }
+      // Check if repeating section is empty
+      if (digits_in_repeating == 0) {
+        fprintf(stderr, "Error: Repeating section cannot be empty\n");
+        return allocate_number_array(base, 0);
+      }
+      in_repeating = false;
+      continue;
+    } else {
+      value_t value = glyph_to_value((glyph_t)ch);
+      if (value != INVALID_VALUE && value < base) {
+        length_digits++;
+        if (seen_decimal) {
+          digits_after_decimal++;
+        }
+        if (in_repeating) {
+          digits_in_repeating++;
+        }
+      } else {
+        fprintf(stderr, "Error: Invalid character '%c' for base %u\n", ch,
+                base);
+        return allocate_number_array(base, 0);
+      }
     }
-    value_t value = glyph_to_value((glyph_t)ch);
-    if (value != INVALID_VALUE && value < base) {
-      length_digits++;
-    }
+  }
+
+  // Check for unclosed parentheses
+  if (paren_depth != 0) {
+    fprintf(stderr, "Error: Unclosed parenthesis\n");
+    return allocate_number_array(base, 0);
+  }
+
+  // Check if decimal point has digits after it
+  if (seen_decimal && digits_after_decimal == 0) {
+    fprintf(stderr,
+            "Error: Decimal point must have at least one digit after it\n");
+    return allocate_number_array(base, 0);
+  }
+
+  // Check for empty input
+  if (length_digits == 0) {
+    fprintf(stderr, "Error: Number must contain at least one digit\n");
+    return allocate_number_array(base, 0);
   }
 
   number_t num = allocate_number_array(base, length_digits);
@@ -154,8 +244,8 @@ number_t initialize_number_from_string(const char *str, base_t base) {
   }
 
   size_t digit_index = 0;
-  bool in_repeating = false;
-  bool seen_decimal = false;
+  bool in_repeating_second_pass = false;
+  seen_decimal = false; // Reset for second pass
 
   // Second pass: parse the string and populate the number
   for (size_t i = 0; str[i] != '\0'; i++) {
@@ -163,19 +253,17 @@ number_t initialize_number_from_string(const char *str, base_t base) {
     if (ch == '-') {
       num.is_negative = true;
     } else if (ch == '.') {
-      if (!seen_decimal) {
-        num.decimal_length = length_digits - digit_index;
-        seen_decimal = true;
-      }
+      num.decimal_length = length_digits - digit_index;
+      seen_decimal = true;
     } else if (ch == '(') {
-      in_repeating = true;
+      in_repeating_second_pass = true;
     } else if (ch == ')') {
-      in_repeating = false;
+      in_repeating_second_pass = false;
     } else {
       value_t value = glyph_to_value((glyph_t)ch);
       if (value != INVALID_VALUE && value < base) {
         num.proto.digits[digit_index++] = value;
-        if (in_repeating) {
+        if (in_repeating_second_pass) {
           num.repeating_length++;
         }
       }
@@ -341,6 +429,84 @@ int main() {
   number_t num10 = initialize_number_from_string("0", 10);
   display_number(&num10);
   deallocate_number(&num10);
+
+  //===========================================================
+  // SECTION: Testing validation errors
+  //===========================================================
+
+  printf("\n=== Testing validation (should show errors) ===\n");
+
+  // Invalid test 1: Multiple decimal points
+  printf("Invalid 1: \"12.3.4\" in base 10: ");
+  number_t inv1 = initialize_number_from_string("12.3.4", 10);
+  display_number(&inv1);
+  deallocate_number(&inv1);
+
+  // Invalid test 2: Negative sign not at start
+  printf("Invalid 2: \"12-3\" in base 10: ");
+  number_t inv2 = initialize_number_from_string("12-3", 10);
+  display_number(&inv2);
+  deallocate_number(&inv2);
+
+  // Invalid test 3: Unclosed parenthesis
+  printf("Invalid 3: \"1.(23\" in base 10: ");
+  number_t inv3 = initialize_number_from_string("1.(23", 10);
+  display_number(&inv3);
+  deallocate_number(&inv3);
+
+  // Invalid test 4: Invalid character for base
+  printf("Invalid 4: \"1A3\" in base 10: ");
+  number_t inv4 = initialize_number_from_string("1A3", 10);
+  display_number(&inv4);
+  deallocate_number(&inv4);
+
+  // Invalid test 5: Repeating without decimal
+  printf("Invalid 5: \"12(3)\" in base 10: ");
+  number_t inv5 = initialize_number_from_string("12(3)", 10);
+  display_number(&inv5);
+  deallocate_number(&inv5);
+
+  // Invalid test 6: Decimal at beginning
+  printf("Invalid 6: \".123\" in base 10: ");
+  number_t inv6 = initialize_number_from_string(".123", 10);
+  display_number(&inv6);
+  deallocate_number(&inv6);
+
+  // Invalid test 7: Decimal at end
+  printf("Invalid 7: \"123.\" in base 10: ");
+  number_t inv7 = initialize_number_from_string("123.", 10);
+  display_number(&inv7);
+  deallocate_number(&inv7);
+
+  // Invalid test 8: Empty string / only special chars
+  printf("Invalid 8: \"-\" in base 10: ");
+  number_t inv8 = initialize_number_from_string("-", 10);
+  display_number(&inv8);
+  deallocate_number(&inv8);
+
+  // Invalid test 9: Empty parentheses
+  printf("Invalid 9: \"1.()\" in base 10: ");
+  number_t inv9 = initialize_number_from_string("1.()", 10);
+  display_number(&inv9);
+  deallocate_number(&inv9);
+
+  // Invalid test 10: Only open paren
+  printf("Invalid 10: \"(\" in base 10: ");
+  number_t inv10 = initialize_number_from_string("(", 10);
+  display_number(&inv10);
+  deallocate_number(&inv10);
+
+  // Invalid test 11: Only close paren
+  printf("Invalid 11: \")\" in base 10: ");
+  number_t inv11 = initialize_number_from_string(")", 10);
+  display_number(&inv11);
+  deallocate_number(&inv11);
+
+  // Invalid test 12: Empty parens only
+  printf("Invalid 12: \"()\" in base 10: ");
+  number_t inv12 = initialize_number_from_string("()", 10);
+  display_number(&inv12);
+  deallocate_number(&inv12);
 
   //===========================================================
 
