@@ -95,6 +95,12 @@ void display_number(const number_t *num) {
     printf("<<NaN>>\n");
     return;
   }
+
+  // Print base prefix if not base 10
+  if (num->proto.base != 10) {
+    printf("%u#", num->proto.base);
+  }
+
   if (num->is_negative) {
     printf("-");
   }
@@ -300,7 +306,8 @@ value_t glyph_to_value(glyph_t glyph) {
 // REPL function - Read Evaluate Print Loop
 void repl() {
   printf("=== Math REPL ===\n");
-  printf("Enter numbers in format: number base (e.g., 1A.3(45) 16)\n");
+  printf("Enter numbers in format: base#number (e.g., 16#1A.3(45))\n");
+  printf("Default base is 10 if no prefix (e.g., 123.45)\n");
   printf("Type 'exit' to quit\n\n");
 
   char input[256];
@@ -331,19 +338,28 @@ void repl() {
       continue;
     }
 
-    // Parse input: expect "number base"
+    // Parse input: look for base#number format
+    char *hash_pos = strchr(input, '#');
     char number_str[256];
-    unsigned int base;
-    int parsed = sscanf(input, "%255s %u", number_str, &base);
+    unsigned int base = 10; // Default base
 
-    if (parsed != 2) {
-      fprintf(stderr, "Error: Expected format: number base\n");
-      continue;
-    }
+    if (hash_pos != NULL) {
+      // Found base# prefix
+      *hash_pos = '\0'; // Temporarily null-terminate to parse base
+      int parsed_base = atoi(input);
 
-    if (base < 2 || base > 36) {
-      fprintf(stderr, "Error: Base must be between 2 and 36\n");
-      continue;
+      if (parsed_base < 2 || parsed_base > 36) {
+        fprintf(stderr, "Error: Base must be between 2 and 36\n");
+        continue;
+      }
+
+      base = parsed_base;
+      strncpy(number_str, hash_pos + 1, sizeof(number_str) - 1);
+      number_str[sizeof(number_str) - 1] = '\0';
+    } else {
+      // No base prefix, use base 10
+      strncpy(number_str, input, sizeof(number_str) - 1);
+      number_str[sizeof(number_str) - 1] = '\0';
     }
 
     // READ: Create number from string
