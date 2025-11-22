@@ -2,9 +2,6 @@
 
 #include <stdio.h>
 
-#define MAX_GLYPHS 256
-#define MAX_HEX_DIGITS 16
-
 // Maximum number of extended digits (0-9, A-Z)
 // Calculation: 1 (for '0') + 9 (for '1'-'9') + 1 (for 'A') + 25 (for 'A'-'Z') =
 // 36 Thus, MAX_EXT_DIGITS = 36 Simplified calculation: '0' to '9' = 10 digits
@@ -273,11 +270,6 @@ number_t initialize_number_from_string(const char *str, base_t base) {
   return num;
 }
 
-// Array to hold glyph data for 256 characters (buffer for allocation purposes ,
-// heap to be used later) note: maybe many of such heaps will be needed in
-// future for larger memory management
-//////glyph_t glyphs[256] = {0}; // Initialize all elements to 0
-
 // value_t to glyph_t conversion function
 glyph_t value_to_glyph(value_t value) {
   if (/* value >= 0 && */ value <= 9) {
@@ -308,20 +300,6 @@ int main() {
 
   // MAX_EXT_DIGITS
   printf("MAX_EXT_DIGITS: %d\n", MAX_EXT_DIGITS);
-
-  //////printf("Size of glyphs element: %zu bytes\n", sizeof(glyphs[0]) );
-
-  //////printf("Glyph array initialized with %zu elements.\n",
-  /// ARRAY_LENGTH(glyphs));
-
-  //////printf("Glyph for character '0' (ASCII 48): %u\n", glyphs['0']);
-
-  // Initialize glyph data for characters 0 to 255
-  ////// for (int i = 0; i < 256; i++) {
-  //     glyphs[i] = (glyph_t)i; // Example initialization
-  // }
-
-  //////printf("Glyph for character '0' (ASCII 48): %u\n", glyphs['0']);
 
   glyph_t sample_glyph = '3'; // Example usage
 
