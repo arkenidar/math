@@ -15,9 +15,9 @@
 #define ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #include <stdbool.h> // For bool type
+#include <stddef.h>  // For size_t
 #include <stdint.h>  // For uint8_t
 #include <stdlib.h>  // For malloc, free
-#include <string.h>  // For string handling functions
 
 typedef uint8_t glyph_t;
 #define INVALID_GLYPH 255
@@ -272,7 +272,7 @@ number_t initialize_number_from_string(const char *str, base_t base) {
 
 // value_t to glyph_t conversion function
 glyph_t value_to_glyph(value_t value) {
-  if (/* value >= 0 && */ value <= 9) {
+  if (value <= 9) {
     return '0' + value;
   } else if (value >= 10 && value < MAX_EXT_DIGITS) {
     return 'A' + (value - 10);
