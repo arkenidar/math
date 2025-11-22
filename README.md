@@ -174,7 +174,9 @@ GDB configuration is included in `.vscode/launch.json`:
 
 ## License
 
-This project is provided as-is for educational and development purposes.
+MIT License - see [LICENSE](LICENSE) file for details.
+
+This is free and open-source software. You are free to use, modify, and distribute it without restriction.
 
 ## Git History
 
