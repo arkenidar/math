@@ -90,8 +90,8 @@ void deallocate_number(number_t *num) {
 
 // number display function (for debugging)
 void display_number(const number_t *num) {
-  if (num == NULL || num->proto.digits == NULL) {
-    printf("Invalid number\n");
+  if (num == NULL || num->proto.digits == NULL || num->proto.length == 0) {
+    printf("<<NaN>>\n");
     return;
   }
   if (num->is_negative) {
