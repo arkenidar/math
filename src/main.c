@@ -87,19 +87,19 @@ void display_number(const number_t *num) {
   if (num->is_negative) {
     printf("-");
   }
-  for (size_t i = 0; i < num->proto.length; i++) {
-    // Display each digit
 
-    // Decimal point handling
-    if (num->decimal_length > 0 &&
-        i == num->proto.length - num->decimal_length) {
+  size_t decimal_pos = num->proto.length - num->decimal_length;
+  size_t repeating_pos = num->proto.length - num->repeating_length;
+
+  for (size_t i = 0; i < num->proto.length; i++) {
+    // Decimal point handling (before repeating parenthesis if at same position)
+    if (num->decimal_length > 0 && i == decimal_pos) {
       printf(".");
     }
 
-    // Repeating decimals handling
-    if (num->repeating_length > 0 &&
-        i == num->proto.length - num->repeating_length) {
-      printf("("); // Start of repeating section , must be closed later
+    // Repeating decimals handling (after decimal point if at same position)
+    if (num->repeating_length > 0 && i == repeating_pos) {
+      printf("(");
     }
 
     // Convert digit value to glyph for display
