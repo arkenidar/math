@@ -1,6 +1,7 @@
 // plan to use C99
 
 #include <stdio.h>
+#include <string.h> // For strlen, strcmp, sscanf
 
 // Maximum number of extended digits (0-9, A-Z)
 // Calculation: 1 (for '0') + 9 (for '1'-'9') + 1 (for 'A') + 25 (for 'A'-'Z') =
@@ -296,7 +297,77 @@ value_t glyph_to_value(glyph_t glyph) {
   }
 }
 
-int main() {
+// REPL function - Read Evaluate Print Loop
+void repl() {
+  printf("=== Math REPL ===\n");
+  printf("Enter numbers in format: number base (e.g., 1A.3(45) 16)\n");
+  printf("Type 'exit' to quit\n\n");
+
+  char input[256];
+  while (1) {
+    printf("> ");
+    fflush(stdout);
+
+    // READ: Get input from stdin
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+      break; // EOF or error
+    }
+
+    // Remove trailing newline
+    size_t len = strlen(input);
+    if (len > 0 && input[len - 1] == '\n') {
+      input[len - 1] = '\0';
+      len--;
+    }
+
+    // Check for exit command
+    if (strcmp(input, "exit") == 0) {
+      printf("Exiting REPL\n");
+      break;
+    }
+
+    // Skip empty lines
+    if (len == 0) {
+      continue;
+    }
+
+    // Parse input: expect "number base"
+    char number_str[256];
+    unsigned int base;
+    int parsed = sscanf(input, "%255s %u", number_str, &base);
+
+    if (parsed != 2) {
+      fprintf(stderr, "Error: Expected format: number base\n");
+      continue;
+    }
+
+    if (base < 2 || base > 36) {
+      fprintf(stderr, "Error: Base must be between 2 and 36\n");
+      continue;
+    }
+
+    // READ: Create number from string
+    number_t num = initialize_number_from_string(number_str, (base_t)base);
+
+    // EVALUATE: (not implemented yet - placeholder for future)
+    // For now, just pass through the number unchanged
+
+    // PRINT: Display the number representation
+    printf("  ");
+    display_number(&num);
+
+    // Deallocate before next iteration
+    deallocate_number(&num);
+  }
+}
+
+int main(int argc, char *argv[]) {
+
+  // Check for REPL mode
+  if (argc > 1 && strcmp(argv[1], "repl") == 0) {
+    repl();
+    return 0;
+  }
 
   // MAX_EXT_DIGITS
   printf("MAX_EXT_DIGITS: %d\n", MAX_EXT_DIGITS);
