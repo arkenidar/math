@@ -89,6 +89,86 @@ void deallocate_number(number_t *num) {
   }
 }
 
+// Normalize number by removing leading and trailing insignificant zeros
+void normalize_number(number_t *num) {
+  if (num == NULL || num->proto.digits == NULL || num->proto.length == 0) {
+    return;
+  }
+
+  // Find first non-zero digit (skip leading zeros)
+  size_t first_nonzero = 0;
+  size_t decimal_pos = num->proto.length - num->decimal_length;
+
+  // Only skip leading zeros before the decimal point
+  while (first_nonzero < decimal_pos && num->proto.digits[first_nonzero] == 0) {
+    first_nonzero++;
+  }
+
+  // If all digits before decimal are zero, keep one zero
+  if (first_nonzero == decimal_pos && num->decimal_length > 0) {
+    first_nonzero = decimal_pos - 1;
+  }
+
+  // Find last non-zero digit (skip trailing zeros after decimal)
+  size_t last_nonzero = num->proto.length - 1;
+
+  // Only skip trailing zeros in the non-repeating decimal part
+  if (num->decimal_length > 0 && num->repeating_length == 0) {
+    while (last_nonzero >= decimal_pos &&
+           num->proto.digits[last_nonzero] == 0) {
+      if (last_nonzero == 0)
+        break;
+      last_nonzero--;
+    }
+    // If all decimal digits are zero, remove the decimal part
+    if (last_nonzero < decimal_pos) {
+      num->decimal_length = 0;
+      last_nonzero = decimal_pos - 1;
+    }
+  }
+
+  // Calculate new length
+  size_t new_length = last_nonzero - first_nonzero + 1;
+
+  // Special case: if all zeros, keep one zero
+  if (new_length == 0 ||
+      (new_length == 1 && num->proto.digits[first_nonzero] == 0)) {
+    num->proto.digits[0] = 0;
+    num->proto.length = 1;
+    num->decimal_length = 0;
+    num->repeating_length = 0;
+    num->is_negative = false; // -0 becomes 0
+    return;
+  }
+
+  // Shift digits if needed
+  if (first_nonzero > 0) {
+    for (size_t i = 0; i < new_length; i++) {
+      num->proto.digits[i] = num->proto.digits[first_nonzero + i];
+    }
+  }
+
+  // Update metadata
+  size_t old_decimal_start = decimal_pos;
+  size_t new_decimal_start = (old_decimal_start > first_nonzero)
+                                 ? (old_decimal_start - first_nonzero)
+                                 : 0;
+
+  num->proto.length = new_length;
+
+  if (num->decimal_length > 0) {
+    num->decimal_length = new_length - new_decimal_start;
+  }
+
+  // Adjust repeating length if trailing zeros were in decimal part
+  if (num->repeating_length > 0) {
+    size_t new_repeating_start = new_length - num->repeating_length;
+    if (new_repeating_start < new_decimal_start) {
+      num->repeating_length = 0; // Repeating section was trimmed
+    }
+  }
+}
+
 // number display function (for debugging)
 void display_number(const number_t *num) {
   if (num == NULL || num->proto.digits == NULL || num->proto.length == 0) {
@@ -274,6 +354,10 @@ number_t initialize_number_from_string(const char *str, base_t base) {
     }
   }
   num.proto.length = digit_index; // Update length to actual number of digits
+
+  // Normalize: remove leading and trailing insignificant zeros
+  normalize_number(&num);
+
   return num;
 }
 
