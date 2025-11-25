@@ -95,6 +95,56 @@ void normalize_number(number_t *num) {
     return;
   }
 
+  // Check if repeating section contains only zeros - if so, remove it
+  if (num->repeating_length > 0) {
+    size_t repeating_start = num->proto.length - num->repeating_length;
+    bool all_zeros_in_repeating = true;
+    for (size_t i = repeating_start; i < num->proto.length; i++) {
+      if (num->proto.digits[i] != 0) {
+        all_zeros_in_repeating = false;
+        break;
+      }
+    }
+    if (all_zeros_in_repeating) {
+      // Remove repeating section
+      num->proto.length -= num->repeating_length;
+      num->decimal_length -= num->repeating_length;
+      num->repeating_length = 0;
+    } else {
+      // Trim leading zeros from repeating section
+      size_t first_nonzero_rep = repeating_start;
+      while (first_nonzero_rep < num->proto.length &&
+             num->proto.digits[first_nonzero_rep] == 0) {
+        first_nonzero_rep++;
+      }
+
+      if (first_nonzero_rep > repeating_start) {
+        // Shift repeating section left to remove leading zeros
+        size_t shift = first_nonzero_rep - repeating_start;
+        for (size_t i = repeating_start; i < num->proto.length - shift; i++) {
+          num->proto.digits[i] = num->proto.digits[i + shift];
+        }
+        num->proto.length -= shift;
+        num->decimal_length -= shift;
+        num->repeating_length -= shift;
+      }
+
+      // Trim trailing zeros from repeating section
+      size_t new_repeating_end = num->proto.length - 1;
+      while (new_repeating_end >= repeating_start &&
+             num->proto.digits[new_repeating_end] == 0) {
+        new_repeating_end--;
+      }
+
+      size_t zeros_trimmed = (num->proto.length - 1) - new_repeating_end;
+      if (zeros_trimmed > 0) {
+        num->proto.length -= zeros_trimmed;
+        num->decimal_length -= zeros_trimmed;
+        num->repeating_length -= zeros_trimmed;
+      }
+    }
+  }
+
   // Find first non-zero digit (skip leading zeros)
   size_t first_nonzero = 0;
   size_t decimal_pos = num->proto.length - num->decimal_length;
