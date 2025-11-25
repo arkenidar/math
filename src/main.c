@@ -245,6 +245,7 @@ number_t initialize_number_from_string(const char *str, base_t base) {
   size_t digits_in_repeating = 0;
   int paren_depth = 0;
   bool in_repeating = false;
+  bool closed_repeating = false; // Track if we've closed a repeating section
 
   for (size_t i = 0; str[i] != '\0'; i++) {
     char ch = str[i];
@@ -287,6 +288,10 @@ number_t initialize_number_from_string(const char *str, base_t base) {
                 "Error: Repeating section must come after decimal point\n");
         return allocate_number_array(base, 0);
       }
+      if (closed_repeating) {
+        fprintf(stderr, "Error: No digits allowed after closing parenthesis\n");
+        return allocate_number_array(base, 0);
+      }
       in_repeating = true;
       digits_in_repeating = 0;
       continue;
@@ -302,8 +307,15 @@ number_t initialize_number_from_string(const char *str, base_t base) {
         return allocate_number_array(base, 0);
       }
       in_repeating = false;
+      closed_repeating = true;
       continue;
     } else {
+      // Check if we're trying to add digits after closing parenthesis
+      if (closed_repeating) {
+        fprintf(stderr, "Error: No digits allowed after closing parenthesis\n");
+        return allocate_number_array(base, 0);
+      }
+
       value_t value = glyph_to_value((glyph_t)ch);
       if (value != INVALID_VALUE && value < base) {
         length_digits++;
