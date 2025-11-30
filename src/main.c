@@ -87,6 +87,7 @@ rational_t rational_make_from_ints(const number_t *num, const number_t *den);
 void rational_deallocate(rational_t *r);
 void rational_normalize(rational_t *r);
 rational_t rational_add(const rational_t *a, const rational_t *b);
+rational_t rational_from_terminating_number(const number_t *x);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -936,6 +937,109 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
   (void)base; // base currently unused, kept for future extensions.
 
   return result;
+}
+
+// Convert a terminating number_t (no repeating section) into a rational_t.
+// If decimal_length == 0, returns num = x, den = 1.
+// If decimal_length > 0, interprets x as N / base^d using digit arithmetic.
+rational_t rational_from_terminating_number(const number_t *x) {
+  rational_t r;
+
+  // Default to 0/1 in base 10 if anything goes wrong.
+  r.num = allocate_number_array(10, 1);
+  r.den = allocate_number_array(10, 1);
+  if (r.num.proto.digits) {
+    r.num.proto.digits[0] = 0;
+    r.num.is_negative = false;
+    r.num.decimal_length = 0;
+    r.num.repeating_length = 0;
+  }
+  if (r.den.proto.digits) {
+    r.den.proto.digits[0] = 1;
+    r.den.is_negative = false;
+    r.den.decimal_length = 0;
+    r.den.repeating_length = 0;
+  }
+
+  if (!x || !x->proto.digits) {
+    fprintf(
+        stderr,
+        "Error: rational_from_terminating_number requires a valid number.\n");
+    return r;
+  }
+
+  if (x->repeating_length != 0) {
+    fprintf(
+        stderr,
+        "Error: rational_from_terminating_number expects no repeating part.\n");
+    return r;
+  }
+
+  base_t base = x->proto.base;
+
+  // Copy numerator as integer: same digits, no decimal metadata.
+  deallocate_number(&r.num);
+  r.num = allocate_number_array(base, x->proto.length);
+  if (!r.num.proto.digits) {
+    return r;
+  }
+  for (size_t i = 0; i < x->proto.length; i++) {
+    r.num.proto.digits[i] = x->proto.digits[i];
+  }
+  r.num.proto.length = x->proto.length;
+  r.num.is_negative = x->is_negative;
+  r.num.decimal_length = 0;
+  r.num.repeating_length = 0;
+  normalize_number(&r.num);
+
+  // Build denominator = base^d where d = x->decimal_length.
+  deallocate_number(&r.den);
+  if (x->decimal_length == 0) {
+    // Just 1 in given base.
+    r.den = allocate_number_array(base, 1);
+    if (r.den.proto.digits) {
+      r.den.proto.digits[0] = 1;
+      r.den.is_negative = false;
+      r.den.decimal_length = 0;
+      r.den.repeating_length = 0;
+    }
+  } else {
+    // Start with 1.
+    number_t den = allocate_number_array(base, 1);
+    if (!den.proto.digits) {
+      return r;
+    }
+    den.proto.digits[0] = 1;
+    den.is_negative = false;
+    den.decimal_length = 0;
+    den.repeating_length = 0;
+
+    // Represent the base itself as a one-digit integer number_t.
+    number_t base_num = allocate_number_array(base, 1);
+    if (!base_num.proto.digits) {
+      deallocate_number(&den);
+      return r;
+    }
+    base_num.proto.digits[0] = (value_t)base;
+    base_num.is_negative = false;
+    base_num.decimal_length = 0;
+    base_num.repeating_length = 0;
+    normalize_number(&base_num);
+
+    // Multiply den by base, decimal_length times: den *= base.
+    for (size_t k = 0; k < x->decimal_length; k++) {
+      number_t tmp = number_int_mul_abs(&den, &base_num);
+      deallocate_number(&den);
+      den = tmp;
+    }
+
+    deallocate_number(&base_num);
+
+    r.den = den;
+  }
+
+  rational_normalize(&r);
+  return r;
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -1988,6 +2092,17 @@ int main(int argc, char *argv[]) {
   deallocate_number(&r4d1);
   deallocate_number(&r4n2);
   deallocate_number(&r4d2);
+
+  // Rational from terminating number: 12.34 -> 1234/100 in base 10
+  printf("Rational 5: from 12.34 (base 10): ");
+  number_t r5x = initialize_number_from_string("12.34", 10);
+  rational_t r5 = rational_from_terminating_number(&r5x);
+  printf("num = ");
+  display_number(&r5.num);
+  printf("den = ");
+  display_number(&r5.den);
+  rational_deallocate(&r5);
+  deallocate_number(&r5x);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
