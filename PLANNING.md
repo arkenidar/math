@@ -78,9 +78,27 @@ This document captures the current design direction and plans for `number_t` and
 ## Near-Term Implementation Steps
 
 1. Introduce internal big-digit helpers (all in terms of `value_t` and `base_t`).
-2. Re-implement `number_add` to use these helpers directly on `number_t` (terminating decimals only at first).
-3. Extend fractional handling to align and add non-repeating decimals exactly.
-4. Add repeating-tail alignment and simple period detection for the result.
-5. Delete `rational_t` and all `uint64_t`-based helpers once tests and REPL cases pass.
+2. Re-implement `number_add` to use these helpers directly on `number_t` (terminating decimals only at first). **This is done.**
+3. Extend fractional handling to align and add non-repeating decimals exactly. **This is done.**
+4. Add repeating-decimal support in `number_add` using a rational-style pipeline expressed entirely in terms of `number_t`:
+   - For each operand, decompose digits into integer `I`, non-repeating fractional `F`, and repeating block `R` in base `b = proto.base`.
+   - Build exact integer numerator/denominator pairs `(num, den)` as integer-only `number_t` values using digit algebra and the standard formulas:
+     - Non-repeating: `value = (I·b^|F| + F) / b^|F|`.
+     - Repeating: `value = (C - B) / (b^|F| · (b^|R| - 1))` where `B` is digits of `I`+`F` and `C` is digits of `I`+`F`+`R`.
+   - Implement integer-only helpers on `number_t` (with `decimal_length = 0`, `repeating_length = 0`):
+     - `number_int_add_abs` (big-digit add),
+     - `number_int_sub_abs` (big-digit sub),
+     - `number_int_mul_abs` (schoolbook mul),
+     - `number_int_divmod_abs` (long division, quotient + remainder).
+   - For `number_add(a, b)`:
+     - Convert each to `(num_a, den_a)` and `(num_b, den_b)` as integer `number_t`s.
+     - Compute `num = num_a * den_b + num_b * den_a` and `den = den_a * den_b` using the integer helpers.
+     - (Optionally) reduce `num/den` via a `number_int_gcd` helper when available.
+     - Convert `(num, den)` back to `number_t` in base `b` by:
+       - Doing integer division `num / den` to get the integer part.
+       - Using repeated `remainder *= b; digit = remainder / den; remainder %= den;` to generate fractional digits.
+       - Tracking remainders and their first positions to detect the start and length of the repeating cycle.
+       - Setting `decimal_length` and `repeating_length` from the detected prefix and period, then calling `normalize_number`.
+5. Delete any remaining references to non-`number_t` numeric types (e.g., old `rational_t`) once the pure `number_t` pipeline is fully in place and REPL tests pass for repeating and non-repeating cases.
 
 This file is the reference for future arithmetic work: new operations should respect `number_t`’s role as the core, arbitrary-precision, base-2–36 rational representation with optional repeating sections.
