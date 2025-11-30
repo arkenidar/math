@@ -2381,9 +2381,9 @@ int main(int argc, char *argv[]) {
   deallocate_number(&r3n2);
   deallocate_number(&r3d2);
 
-  // Rational addition with cancellation: -1/2 + 1/2 = 0/1
-  printf("Rational 4: -1/2 + 1/2 (base 10): ");
-  number_t r4n1 = initialize_number_from_string("-1", 10);
+  // Rational subtraction with cancellation: 1/2 - 1/2 = 0/1
+  printf("Rational 4: 1/2 - 1/2 (base 10): ");
+  number_t r4n1 = initialize_number_from_string("1", 10);
   number_t r4d1 = initialize_number_from_string("2", 10);
   number_t r4n2 = initialize_number_from_string("1", 10);
   number_t r4d2 = initialize_number_from_string("2", 10);
@@ -2391,7 +2391,7 @@ int main(int argc, char *argv[]) {
   rational_t r4b = rational_make_from_ints(&r4n2, &r4d2);
   rational_normalize(&r4a);
   rational_normalize(&r4b);
-  rational_t r4 = rational_add(&r4a, &r4b);
+  rational_t r4 = rational_sub(&r4a, &r4b);
   printf("num = ");
   display_number(&r4.num);
   printf("den = ");
