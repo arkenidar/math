@@ -911,38 +911,76 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
 
   base_t base = a->num.proto.base;
 
-  // Compute common denominator: den = a.den * b.den
+  // Compute common denominator: den = a.den * b.den (always positive).
   number_t den_prod = number_int_mul_abs(&a->den, &b->den);
 
-  // Compute scaled numerators: n1 = a.num * b.den, n2 = b.num * a.den
-  number_t n1_abs = number_int_mul_abs(&a->num, &b->den);
-  number_t n2_abs = number_int_mul_abs(&b->num, &a->den);
+  // Compute scaled absolute numerators: |a.num| * b.den and |b.num| * a.den.
+  number_t a_num_abs = a->num;
+  a_num_abs.is_negative = false;
+  number_t b_num_abs = b->num;
+  b_num_abs.is_negative = false;
 
-  // Apply signs to n1_abs and n2_abs logically.
-  n1_abs.is_negative = a->num.is_negative;
-  n2_abs.is_negative = b->num.is_negative;
+  number_t n1_mag = number_int_mul_abs(&a_num_abs, &b->den);
+  number_t n2_mag = number_int_mul_abs(&b_num_abs, &a->den);
 
-  // Now add the two signed integers via number_add.
-  number_t n_sum = number_add(&n1_abs, &n2_abs);
+  // Compare magnitudes to drive dominant-sign logic.
+  rational_t tmp;
 
-  // Build result rational from n_sum / den_prod.
-  rational_t tmp = rational_make_from_ints(&n_sum, &den_prod);
+  int cmp = compare_int_abs(&n1_mag, &n2_mag);
+
+  if (a->num.is_negative == b->num.is_negative) {
+    // Same sign: add magnitudes, keep that sign.
+    number_t n_sum_mag = number_int_add_abs(&n1_mag, &n2_mag);
+    n_sum_mag.is_negative = a->num.is_negative;
+    tmp = rational_make_from_ints(&n_sum_mag, &den_prod);
+    deallocate_number(&n_sum_mag);
+  } else {
+    // Opposite signs: subtract smaller magnitude from larger.
+    if (cmp == 0) {
+      // Exact cancellation to 0/1.
+      number_t zero = allocate_number_array(base, 1);
+      if (zero.proto.digits) {
+        zero.proto.digits[0] = 0;
+        zero.is_negative = false;
+        zero.decimal_length = 0;
+        zero.repeating_length = 0;
+      }
+      tmp = rational_make_from_ints(&zero, &den_prod);
+      deallocate_number(&zero);
+    } else if (cmp > 0) {
+      // |a| > |b|: result sign is sign(a).
+      number_t n_diff_mag = number_int_sub_abs(&n1_mag, &n2_mag, false);
+      n_diff_mag.is_negative = a->num.is_negative;
+      tmp = rational_make_from_ints(&n_diff_mag, &den_prod);
+      deallocate_number(&n_diff_mag);
+    } else {
+      // |b| > |a|: result sign is sign(b).
+      number_t n_diff_mag = number_int_sub_abs(&n2_mag, &n1_mag, false);
+      n_diff_mag.is_negative = b->num.is_negative;
+      tmp = rational_make_from_ints(&n_diff_mag, &den_prod);
+      deallocate_number(&n_diff_mag);
+    }
+  }
+
   rational_deallocate(&result);
   result = tmp;
 
   rational_normalize(&result);
 
   // Ensure exact zero is canonicalized as 0/1.
-  bool num_is_zero = true;
-  if (result.num.proto.digits && result.num.proto.length > 0) {
+  bool res_num_is_zero = true;
+  if (!result.num.proto.digits || result.num.proto.length == 0) {
+    res_num_is_zero = true;
+  } else {
     for (size_t i = 0; i < result.num.proto.length; i++) {
       if (result.num.proto.digits[i] != 0) {
-        num_is_zero = false;
+        res_num_is_zero = false;
         break;
       }
     }
   }
-  if (num_is_zero) {
+
+  if (res_num_is_zero) {
     result.num.is_negative = false;
     if (result.den.proto.digits && result.den.proto.length > 0) {
       result.den.proto.length = 1;
@@ -954,9 +992,8 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
   }
 
   deallocate_number(&den_prod);
-  deallocate_number(&n1_abs);
-  deallocate_number(&n2_abs);
-  deallocate_number(&n_sum);
+  deallocate_number(&n1_mag);
+  deallocate_number(&n2_mag);
 
   (void)base; // base currently unused, kept for future extensions.
 
@@ -2161,6 +2198,36 @@ int main(int argc, char *argv[]) {
   deallocate_number(&m1);
   deallocate_number(&m2);
   deallocate_number(&mprod);
+
+  // Signed add: -1 + 1 = 0
+  printf("Int Add 2 (signed): -1 + 1 (base 10): ");
+  number_t sa1 = initialize_number_from_string("-1", 10);
+  number_t sa2 = initialize_number_from_string("1", 10);
+  number_t sasum = number_add(&sa1, &sa2);
+  display_number(&sasum);
+  deallocate_number(&sa1);
+  deallocate_number(&sa2);
+  deallocate_number(&sasum);
+
+  // Signed sub: 5 - 5 = 0
+  printf("Int Sub 2 (signed): 5 - 5 (base 10): ");
+  number_t ss1 = initialize_number_from_string("5", 10);
+  number_t ss2 = initialize_number_from_string("5", 10);
+  number_t ssdiff = number_sub(&ss1, &ss2);
+  display_number(&ssdiff);
+  deallocate_number(&ss1);
+  deallocate_number(&ss2);
+  deallocate_number(&ssdiff);
+
+  // Signed sub: -5 - (-5) = 0
+  printf("Int Sub 3 (signed): -5 - (-5) (base 10): ");
+  number_t ss3 = initialize_number_from_string("-5", 10);
+  number_t ss4 = initialize_number_from_string("-5", 10);
+  number_t ssdiff2 = number_sub(&ss3, &ss4);
+  display_number(&ssdiff2);
+  deallocate_number(&ss3);
+  deallocate_number(&ss4);
+  deallocate_number(&ssdiff2);
 
   // Integer divmod: 100 / 7 = 14 remainder 2
   printf("Int DivMod 1: 100 / 7 (base 10):\n");
