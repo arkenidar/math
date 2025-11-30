@@ -71,6 +71,7 @@ typedef struct {
 number_t initialize_number_from_string(const char *str, base_t base);
 void normalize_number(number_t *num);
 number_t number_add(const number_t *a, const number_t *b);
+number_t number_sub(const number_t *a, const number_t *b);
 
 // Integer-only helpers on number_t (decimal_length == 0, repeating_length == 0)
 number_t number_int_add_abs(const number_t *a, const number_t *b);
@@ -87,6 +88,7 @@ rational_t rational_make_from_ints(const number_t *num, const number_t *den);
 void rational_deallocate(rational_t *r);
 void rational_normalize(rational_t *r);
 rational_t rational_add(const rational_t *a, const rational_t *b);
+rational_t rational_sub(const rational_t *a, const rational_t *b);
 rational_t rational_from_terminating_number(const number_t *x);
 rational_t rational_from_repeating_number(const number_t *x);
 
@@ -930,6 +932,27 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
 
   rational_normalize(&result);
 
+  // Ensure exact zero is canonicalized as 0/1.
+  bool num_is_zero = true;
+  if (result.num.proto.digits && result.num.proto.length > 0) {
+    for (size_t i = 0; i < result.num.proto.length; i++) {
+      if (result.num.proto.digits[i] != 0) {
+        num_is_zero = false;
+        break;
+      }
+    }
+  }
+  if (num_is_zero) {
+    result.num.is_negative = false;
+    if (result.den.proto.digits && result.den.proto.length > 0) {
+      result.den.proto.length = 1;
+      result.den.proto.digits[0] = 1;
+      result.den.is_negative = false;
+      result.den.decimal_length = 0;
+      result.den.repeating_length = 0;
+    }
+  }
+
   deallocate_number(&den_prod);
   deallocate_number(&n1_abs);
   deallocate_number(&n2_abs);
@@ -938,6 +961,33 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
   (void)base; // base currently unused, kept for future extensions.
 
   return result;
+}
+
+// Subtract two rationals: a - b implemented as a + (-b).
+rational_t rational_sub(const rational_t *a, const rational_t *b) {
+  if (!a || !b) {
+    rational_t r;
+    r.num = allocate_number_array(10, 1);
+    r.den = allocate_number_array(10, 1);
+    if (r.num.proto.digits) {
+      r.num.proto.digits[0] = 0;
+      r.num.is_negative = false;
+      r.num.decimal_length = 0;
+      r.num.repeating_length = 0;
+    }
+    if (r.den.proto.digits) {
+      r.den.proto.digits[0] = 1;
+      r.den.is_negative = false;
+      r.den.decimal_length = 0;
+      r.den.repeating_length = 0;
+    }
+    return r;
+  }
+
+  rational_t neg_b = *b;
+  neg_b.num.is_negative = !neg_b.num.is_negative;
+
+  return rational_add(a, &neg_b);
 }
 
 // Convert a terminating number_t (no repeating section) into a rational_t.
@@ -1495,8 +1545,11 @@ number_t number_add(const number_t *a, const number_t *b) {
     if (zero.proto.digits) {
       zero.proto.digits[0] = 0;
       zero.is_negative = false;
-      zero.decimal_length = 0;
+      zero.decimal_length = a->decimal_length > b->decimal_length
+                                ? a->decimal_length
+                                : b->decimal_length;
       zero.repeating_length = 0;
+      normalize_number(&zero);
     }
     return zero;
   }
@@ -1508,6 +1561,21 @@ number_t number_add(const number_t *a, const number_t *b) {
     // |b| > |a|, result sign is sign of b.
     return sub_same_sign_abs(b, a, b->is_negative);
   }
+}
+
+// Public subtraction API: a - b implemented as a + (-b).
+number_t number_sub(const number_t *a, const number_t *b) {
+  if (!a || !b) {
+    fprintf(stderr, "Error: number_sub requires non-null operands.\n");
+    return allocate_number_array(10, 0);
+  }
+
+  number_t neg_b = *b;
+  neg_b.is_negative = !neg_b.is_negative;
+
+  number_t result = number_add(a, &neg_b);
+
+  return result;
 }
 
 // Normalize number by removing leading and trailing insignificant zeros
@@ -2301,6 +2369,29 @@ int main(int argc, char *argv[]) {
   display_number(&r7.den);
   rational_deallocate(&r7);
   deallocate_number(&r7x);
+
+  // Simple rational subtraction: 1/2 - 1/3 = 1/6
+  printf("Rational 8: 1/2 - 1/3 (base 10): ");
+  number_t r8n1 = initialize_number_from_string("1", 10);
+  number_t r8d1 = initialize_number_from_string("2", 10);
+  number_t r8n2 = initialize_number_from_string("1", 10);
+  number_t r8d2 = initialize_number_from_string("3", 10);
+  rational_t r8a = rational_make_from_ints(&r8n1, &r8d1);
+  rational_t r8b = rational_make_from_ints(&r8n2, &r8d2);
+  rational_normalize(&r8a);
+  rational_normalize(&r8b);
+  rational_t r8 = rational_sub(&r8a, &r8b);
+  printf("num = ");
+  display_number(&r8.num);
+  printf("den = ");
+  display_number(&r8.den);
+  rational_deallocate(&r8);
+  rational_deallocate(&r8a);
+  rational_deallocate(&r8b);
+  deallocate_number(&r8n1);
+  deallocate_number(&r8d1);
+  deallocate_number(&r8n2);
+  deallocate_number(&r8d2);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
