@@ -64,6 +64,7 @@ void normalize_number(number_t *num);
 number_t number_int_add_abs(const number_t *a, const number_t *b);
 number_t number_int_sub_abs(const number_t *a, const number_t *b,
                             bool negative_result);
+number_t number_int_mul_abs(const number_t *a, const number_t *b);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -257,6 +258,107 @@ number_t number_int_sub_abs(const number_t *a, const number_t *b,
   normalize_number(&result);
   return result;
 }
+
+// Integer-only absolute multiplication: |a| * |b| using schoolbook
+// multiplication. Both operands must be non-negative integers in the same
+// base with decimal_length == 0 and repeating_length == 0.
+number_t number_int_mul_abs(const number_t *a, const number_t *b) {
+  number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(stderr, "Error: number_int_mul_abs requires two valid integers in "
+                    "the same base.\n");
+    return result;
+  }
+
+  if (a->decimal_length != 0 || b->decimal_length != 0 ||
+      a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr, "Error: number_int_mul_abs expects integer operands.\n");
+    return result;
+  }
+
+  base_t base = a->proto.base;
+
+  // If either operand is zero, return zero.
+  bool a_is_zero = true;
+  for (size_t i = 0; i < a->proto.length; i++) {
+    if (a->proto.digits[i] != 0) {
+      a_is_zero = false;
+      break;
+    }
+  }
+  bool b_is_zero = true;
+  for (size_t i = 0; i < b->proto.length; i++) {
+    if (b->proto.digits[i] != 0) {
+      b_is_zero = false;
+      break;
+    }
+  }
+
+  if (a_is_zero || b_is_zero) {
+    result = allocate_number_array(base, 1);
+    if (result.proto.digits) {
+      result.proto.digits[0] = 0;
+      result.is_negative = false;
+      result.decimal_length = 0;
+      result.repeating_length = 0;
+    }
+    return result;
+  }
+
+  size_t len_a = a->proto.length;
+  size_t len_b = b->proto.length;
+  size_t len_res = len_a + len_b;
+
+  result = allocate_number_array(base, len_res);
+  if (!result.proto.digits) {
+    return result;
+  }
+
+  // Initialize to zero.
+  for (size_t i = 0; i < len_res; i++) {
+    result.proto.digits[i] = 0;
+  }
+
+  // Schoolbook multiplication from least significant digits.
+  for (size_t ia = 0; ia < len_a; ia++) {
+    size_t pos_a = len_a - 1 - ia;
+    long da = (long)a->proto.digits[pos_a];
+    long carry = 0;
+
+    for (size_t ib = 0; ib < len_b; ib++) {
+      size_t pos_b = len_b - 1 - ib;
+      size_t pos_res = len_res - 1 - (ia + ib);
+      long db = (long)b->proto.digits[pos_b];
+      long existing = (long)result.proto.digits[pos_res];
+      long prod = da * db + existing + carry;
+      result.proto.digits[pos_res] = (value_t)(prod % base);
+      carry = prod / base;
+    }
+
+    // Propagate any remaining carry.
+    size_t pos_res = len_res - 1 - (ia + len_b);
+    while (carry > 0 && pos_res < len_res) {
+      long existing = (long)result.proto.digits[pos_res];
+      long sum = existing + carry;
+      result.proto.digits[pos_res] = (value_t)(sum % base);
+      carry = sum / base;
+      if (pos_res == 0) {
+        break;
+      }
+      pos_res--;
+    }
+  }
+
+  result.is_negative = false;
+  result.decimal_length = 0;
+  result.repeating_length = 0;
+
+  normalize_number(&result);
+  return result;
+}
+
 
 // Compare absolute values of two numbers in the same base.
 // Returns: -1 if |a| < |b|, 0 if equal, 1 if |a| > |b|.
@@ -1123,6 +1225,16 @@ int main(int argc, char *argv[]) {
   deallocate_number(&j1);
   deallocate_number(&j2);
   deallocate_number(&jdiff);
+
+  // Integer mul: 12 * 34 = 408
+  printf("Int Mul 1: 12 * 34 (base 10): ");
+  number_t m1 = initialize_number_from_string("12", 10);
+  number_t m2 = initialize_number_from_string("34", 10);
+  number_t mprod = number_int_mul_abs(&m1, &m2);
+  display_number(&mprod);
+  deallocate_number(&m1);
+  deallocate_number(&m2);
+  deallocate_number(&mprod);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
