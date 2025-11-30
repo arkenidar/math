@@ -56,6 +56,45 @@ typedef struct {
   size_t repeating_length;
 } number_t;
 
+// Forward declarations that depend on number_t
+number_t initialize_number_from_string(const char *str, base_t base);
+void normalize_number(number_t *num);
+
+// Simple rational representation: sign * numerator / denominator in base 10
+// (we operate on integer numerators/denominators using uint64_t where
+// possible).
+typedef struct {
+  bool is_negative;
+  uint64_t numerator;
+  uint64_t denominator;
+} rational_t;
+
+// Compute greatest common divisor
+static uint64_t gcd_u64(uint64_t a, uint64_t b) {
+  while (b != 0) {
+    uint64_t t = b;
+    b = a % b;
+    a = t;
+  }
+  return a == 0 ? 1 : a;
+}
+
+// Helper: deallocate and reset number to empty/NaN-like state
+void reset_number(number_t *num) {
+  if (num == NULL) {
+    return;
+  }
+  if (num->proto.digits != NULL) {
+    free(num->proto.digits);
+  }
+  num->proto.digits = NULL;
+  num->proto.length = 0;
+  num->proto.base = 0;
+  num->is_negative = false;
+  num->decimal_length = 0;
+  num->repeating_length = 0;
+}
+
 // allocate number structure
 // Returns a number_t with digits set to NULL on allocation failure
 number_t allocate_number_array(base_t base, size_t length) {
@@ -87,6 +126,447 @@ void deallocate_number(number_t *num) {
     free(num->proto.digits);
     num->proto.digits = NULL;
   }
+}
+
+// Convert a base-b digit sequence with decimal and repeating information into
+// a rational number (in base 10 arithmetic), using uint64_t. If the value
+// overflows uint64_t, the behavior is undefined for now.
+rational_t number_to_rational(const number_t *num) {
+  rational_t r;
+  r.is_negative = false;
+  r.numerator = 0;
+  r.denominator = 1;
+
+  if (!num || !num->proto.digits || num->proto.length == 0) {
+    return r;
+  }
+
+  base_t base = num->proto.base;
+  size_t total_len = num->proto.length;
+  size_t d = num->decimal_length;
+  size_t rlen = num->repeating_length;
+
+  // Integer and fractional decomposition uses the usual repeating-decimal
+  // formula in arbitrary base b:
+  // Let X = integer part, Y = non-repeating fractional, Z = repeating block.
+  // Then value = X + Y / b^d + Z / (b^d * (b^rlen - 1)). We implement this by
+  // turning everything into a single fraction.
+
+  // Compute integer part X and construct full digit sequence as uint64_t.
+  uint64_t value_int = 0;
+  for (size_t i = 0; i < total_len; i++) {
+    value_int = value_int * base + num->proto.digits[i];
+  }
+
+  // If there are no decimal digits and no repeating block, this is already an
+  // integer.
+  if (d == 0 && rlen == 0) {
+    r.is_negative = num->is_negative;
+    r.numerator = value_int;
+    r.denominator = 1;
+    return r;
+  }
+
+  // General case: use the standard formula with whole-number representation of
+  // the non-repeating+repeating tail.
+  size_t int_len = total_len - d;
+
+  // A = digits up to decimal point (integer part)
+  uint64_t A = 0;
+  for (size_t i = 0; i < int_len; i++) {
+    A = A * base + num->proto.digits[i];
+  }
+
+  // B_digits = integer + non-repeating fractional
+  uint64_t B = 0;
+  for (size_t i = 0; i < int_len + (d - rlen); i++) {
+    B = B * base + num->proto.digits[i];
+  }
+
+  // C_digits = integer + full fractional (non-repeating + repeating)
+  uint64_t C = 0;
+  for (size_t i = 0; i < total_len; i++) {
+    C = C * base + num->proto.digits[i];
+  }
+
+  if (rlen == 0) {
+    // Pure terminating decimal: value = C / base^d
+    uint64_t denom = 1;
+    for (size_t i = 0; i < d; i++) {
+      denom *= base;
+    }
+    uint64_t g = gcd_u64(C, denom);
+    r.is_negative = num->is_negative;
+    r.numerator = C / g;
+    r.denominator = denom / g;
+    return r;
+  }
+
+  // Repeating case in base b:
+  // value = (C - B) / (b^d - b^(d - rlen))
+  uint64_t pow_bd = 1;
+  for (size_t i = 0; i < d; i++) {
+    pow_bd *= base;
+  }
+  uint64_t pow_bdr = 1;
+  for (size_t i = 0; i < d - rlen; i++) {
+    pow_bdr *= base;
+  }
+
+  uint64_t numer = C - B;
+  uint64_t denom = pow_bd - pow_bdr;
+  uint64_t g = gcd_u64(numer, denom);
+  numer /= g;
+  denom /= g;
+
+  r.is_negative = num->is_negative;
+  r.numerator = numer;
+  r.denominator = denom;
+  return r;
+}
+
+// Add two rationals and return result in reduced form.
+rational_t rational_add(rational_t a, rational_t b) {
+  rational_t r;
+  // Convert to signed 128-bit style using int64_t where possible.
+  int64_t sa = a.is_negative ? -(int64_t)a.numerator : (int64_t)a.numerator;
+  int64_t sb = b.is_negative ? -(int64_t)b.numerator : (int64_t)b.numerator;
+
+  uint64_t denom = a.denominator * b.denominator;
+  int64_t num_signed =
+      sa * (int64_t)b.denominator + sb * (int64_t)a.denominator;
+
+  r.is_negative = (num_signed < 0);
+  uint64_t num_abs =
+      (num_signed < 0) ? (uint64_t)(-num_signed) : (uint64_t)num_signed;
+
+  uint64_t g = gcd_u64(num_abs, denom);
+  r.numerator = num_abs / g;
+  r.denominator = denom / g;
+  return r;
+}
+
+// Convert a rational back to a base-b number_t, choosing a representation
+// using a (possibly repeating) fractional part. For now we only support
+// denominators that are powers of base or factors of (base^k - 1) for small k
+// and fall back to a finite expansion up to a fixed precision.
+number_t rational_to_number(rational_t r, base_t base) {
+  // For now, handle only terminating cases where denominator is a power of
+  // base; otherwise, just emit a finite expansion with a fixed maximum length
+  // and no repeating block.
+  const size_t MAX_DIGITS = 32;
+
+  // Handle zero
+  if (r.numerator == 0) {
+    number_t zero = allocate_number_array(base, 1);
+    if (zero.proto.digits) {
+      zero.proto.digits[0] = 0;
+      zero.is_negative = false;
+      zero.decimal_length = 0;
+      zero.repeating_length = 0;
+    }
+    return zero;
+  }
+
+  // Extract integer part
+  uint64_t num = r.numerator / r.denominator;
+  uint64_t rem = r.numerator % r.denominator;
+
+  // Collect integer digits in reverse
+  value_t int_digits[MAX_DIGITS];
+  size_t int_len = 0;
+  while (num > 0 && int_len < MAX_DIGITS) {
+    value_t d = (value_t)(num % base);
+    int_digits[int_len++] = d;
+    num /= base;
+  }
+  if (int_len == 0) {
+    int_digits[int_len++] = 0;
+  }
+
+  // Fractional part: generate up to MAX_DIGITS - int_len digits.
+  value_t frac_digits[MAX_DIGITS];
+  size_t frac_len = 0;
+  while (rem != 0 && int_len + frac_len < MAX_DIGITS) {
+    rem *= base;
+    uint64_t digit = rem / r.denominator;
+    rem = rem % r.denominator;
+    frac_digits[frac_len++] = (value_t)digit;
+  }
+
+  size_t total_len = int_len + frac_len;
+  number_t num_out = allocate_number_array(base, total_len);
+  if (!num_out.proto.digits) {
+    return num_out;
+  }
+
+  // Write integer digits in correct order
+  for (size_t i = 0; i < int_len; i++) {
+    num_out.proto.digits[i] = int_digits[int_len - 1 - i];
+  }
+  // Then fractional digits
+  for (size_t i = 0; i < frac_len; i++) {
+    num_out.proto.digits[int_len + i] = frac_digits[i];
+  }
+
+  num_out.proto.length = total_len;
+  num_out.is_negative = r.is_negative;
+  num_out.decimal_length = frac_len;
+  num_out.repeating_length = 0; // conservative for now
+  normalize_number(&num_out);
+  return num_out;
+}
+
+// Compare absolute values of two numbers in the same base.
+// Returns: -1 if |a| < |b|, 0 if equal, 1 if |a| > |b|.
+int compare_abs(const number_t *a, const number_t *b) {
+  if (!a || !b || !a->proto.digits || !b->proto.digits) {
+    return 0;
+  }
+
+  // Align decimal lengths by concept: integer parts then fractional parts.
+  size_t a_int_len = a->proto.length - a->decimal_length;
+  size_t b_int_len = b->proto.length - b->decimal_length;
+
+  if (a_int_len < b_int_len) {
+    return -1;
+  } else if (a_int_len > b_int_len) {
+    return 1;
+  }
+
+  // Same integer length: compare integer digits from most significant.
+  for (size_t i = 0; i < a_int_len; i++) {
+    value_t da = a->proto.digits[i];
+    value_t db = b->proto.digits[i];
+    if (da < db) {
+      return -1;
+    } else if (da > db) {
+      return 1;
+    }
+  }
+
+  // Compare fractional part by padding shorter with zeros conceptually.
+  size_t max_frac = a->decimal_length > b->decimal_length ? a->decimal_length
+                                                          : b->decimal_length;
+  for (size_t k = 0; k < max_frac; k++) {
+    size_t a_idx = a_int_len + k;
+    size_t b_idx = b_int_len + k;
+    value_t da = (k < a->decimal_length && a_idx < a->proto.length)
+                     ? a->proto.digits[a_idx]
+                     : 0;
+    value_t db = (k < b->decimal_length && b_idx < b->proto.length)
+                     ? b->proto.digits[b_idx]
+                     : 0;
+    if (da < db) {
+      return -1;
+    } else if (da > db) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+// Core digit-wise addition of same-sign numbers in the same base.
+// Handles decimal alignment and ignores repeating sections (assumes
+// they are already expanded/truncated as desired by the caller).
+number_t add_same_sign(const number_t *a, const number_t *b) {
+  number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(
+        stderr,
+        "Error: add_same_sign requires two valid numbers in the same base.\n");
+    return result;
+  }
+
+  base_t base = a->proto.base;
+
+  size_t a_int_len = a->proto.length - a->decimal_length;
+  size_t b_int_len = b->proto.length - b->decimal_length;
+  size_t max_int_len = a_int_len > b_int_len ? a_int_len : b_int_len;
+  size_t max_frac_len = a->decimal_length > b->decimal_length
+                            ? a->decimal_length
+                            : b->decimal_length;
+
+  // Result length at most max_int_len + max_frac_len + 1 (possible carry).
+  size_t max_total = max_int_len + max_frac_len + 1;
+  result = allocate_number_array(base, max_total);
+  if (!result.proto.digits) {
+    return result;
+  }
+
+  // Work from least significant digit to most.
+  long carry = 0;
+  size_t ri = max_total;
+
+  // Fractional part (from rightmost fractional digit).
+  for (size_t k = 0; k < max_frac_len; k++) {
+    size_t a_pos = a->proto.length - 1 - k;
+    size_t b_pos = b->proto.length - 1 - k;
+    value_t da = (k < a->decimal_length && a_pos < a->proto.length)
+                     ? a->proto.digits[a_pos]
+                     : 0;
+    value_t db = (k < b->decimal_length && b_pos < b->proto.length)
+                     ? b->proto.digits[b_pos]
+                     : 0;
+    long sum = (long)da + (long)db + carry;
+    carry = sum / base;
+    value_t digit = (value_t)(sum % base);
+    ri--;
+    result.proto.digits[ri] = digit;
+  }
+
+  // Integer part.
+  for (size_t k = 0; k < max_int_len; k++) {
+    size_t a_pos = (a_int_len > k) ? (a_int_len - 1 - k) : (size_t)-1;
+    size_t b_pos = (b_int_len > k) ? (b_int_len - 1 - k) : (size_t)-1;
+    value_t da =
+        (a_int_len > k && a_pos < a->proto.length) ? a->proto.digits[a_pos] : 0;
+    value_t db =
+        (b_int_len > k && b_pos < b->proto.length) ? b->proto.digits[b_pos] : 0;
+    long sum = (long)da + (long)db + carry;
+    carry = sum / base;
+    value_t digit = (value_t)(sum % base);
+    ri--;
+    result.proto.digits[ri] = digit;
+  }
+
+  // Final carry.
+  if (carry != 0) {
+    ri--;
+    result.proto.digits[ri] = (value_t)carry;
+  }
+
+  // Shift result to start at index 0.
+  size_t used = max_total - ri;
+  for (size_t i = 0; i < used; i++) {
+    result.proto.digits[i] = result.proto.digits[ri + i];
+  }
+
+  result.proto.length = used;
+  result.is_negative = a->is_negative; // both have same sign
+  result.decimal_length = max_frac_len;
+  result.repeating_length = 0; // conservative for now
+
+  normalize_number(&result);
+  return result;
+}
+
+// Core digit-wise subtraction of same-sign numbers in the same base.
+// Computes |a| - |b| assuming |a| >= |b| in magnitude.
+number_t sub_same_sign_abs(const number_t *a, const number_t *b,
+                           bool negative_result) {
+  number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(stderr, "Error: sub_same_sign_abs requires two valid numbers in "
+                    "the same base.\n");
+    return result;
+  }
+
+  base_t base = a->proto.base;
+
+  size_t a_int_len = a->proto.length - a->decimal_length;
+  size_t b_int_len = b->proto.length - b->decimal_length;
+  size_t max_int_len = a_int_len > b_int_len ? a_int_len : b_int_len;
+  size_t max_frac_len = a->decimal_length > b->decimal_length
+                            ? a->decimal_length
+                            : b->decimal_length;
+
+  size_t max_total = max_int_len + max_frac_len;
+  result = allocate_number_array(base, max_total);
+  if (!result.proto.digits) {
+    return result;
+  }
+
+  long borrow = 0;
+  size_t ri = max_total;
+
+  // Fractional part.
+  for (size_t k = 0; k < max_frac_len; k++) {
+    size_t a_pos = a->proto.length - 1 - k;
+    size_t b_pos = b->proto.length - 1 - k;
+    long da = (k < a->decimal_length && a_pos < a->proto.length)
+                  ? (long)a->proto.digits[a_pos]
+                  : 0;
+    long db = (k < b->decimal_length && b_pos < b->proto.length)
+                  ? (long)b->proto.digits[b_pos]
+                  : 0;
+    long diff = da - db - borrow;
+    if (diff < 0) {
+      diff += base;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    ri--;
+    result.proto.digits[ri] = (value_t)diff;
+  }
+
+  // Integer part.
+  for (size_t k = 0; k < max_int_len; k++) {
+    size_t a_pos = (a_int_len > k) ? (a_int_len - 1 - k) : (size_t)-1;
+    size_t b_pos = (b_int_len > k) ? (b_int_len - 1 - k) : (size_t)-1;
+    long da = (a_int_len > k && a_pos < a->proto.length)
+                  ? (long)a->proto.digits[a_pos]
+                  : 0;
+    long db = (b_int_len > k && b_pos < b->proto.length)
+                  ? (long)b->proto.digits[b_pos]
+                  : 0;
+    long diff = da - db - borrow;
+    if (diff < 0) {
+      diff += base;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    ri--;
+    result.proto.digits[ri] = (value_t)diff;
+  }
+
+  // Shift result to index 0.
+  size_t used = max_total - ri;
+  for (size_t i = 0; i < used; i++) {
+    result.proto.digits[i] = result.proto.digits[ri + i];
+  }
+
+  result.proto.length = used;
+  result.is_negative = negative_result;
+  result.decimal_length = max_frac_len;
+  result.repeating_length = 0;
+
+  normalize_number(&result);
+  return result;
+}
+
+// Public addition API: algebraic sum of two numbers in the same base.
+number_t number_add(const number_t *a, const number_t *b) {
+  if (!a || !b || !a->proto.digits || !b->proto.digits) {
+    fprintf(stderr,
+            "Error: number_add requires non-null numbers with digits.\n");
+    return allocate_number_array(10, 0);
+  }
+
+  if (a->proto.base != b->proto.base) {
+    fprintf(stderr,
+            "Error: number_add requires both numbers in the same base.\n");
+    return allocate_number_array(a->proto.base, 0);
+  }
+
+  // If either is effectively NaN-like, return empty result.
+  if (a->proto.length == 0 || b->proto.length == 0) {
+    fprintf(stderr, "Error: number_add received empty number.\n");
+    return allocate_number_array(a->proto.base, 0);
+  }
+  // Convert both to rationals in base 10 arithmetic, add them, then convert
+  // back to base a->proto.base.
+  rational_t ra = number_to_rational(a);
+  rational_t rb = number_to_rational(b);
+  rational_t rs = rational_add(ra, rb);
+  return rational_to_number(rs, a->proto.base);
 }
 
 // Normalize number by removing leading and trailing insignificant zeros
@@ -327,7 +807,7 @@ number_t initialize_number_from_string(const char *str, base_t base) {
         }
       } else {
         fprintf(stderr, "Error: Invalid character '%c' for base %u\n", ch,
-                base);
+                (unsigned int)base);
         return allocate_number_array(base, 0);
       }
     }
@@ -424,6 +904,7 @@ void repl() {
   printf("=== Math REPL ===\n");
   printf("Enter numbers in format: base#number (e.g., 16#1A.3(45))\n");
   printf("Default base is 10 if no prefix (e.g., 123.45)\n");
+  printf("Addition: + a b  (e.g., + 1.2 0.8)\n");
   printf("Type 'exit' to quit\n\n");
 
   char input[256];
@@ -454,41 +935,133 @@ void repl() {
       continue;
     }
 
-    // Parse input: look for base#number format
+    // Check for addition command: starts with '+'
+    if (input[0] == '+' && (input[1] == ' ' || input[1] == '\t')) {
+      char *first = input + 1;
+      while (*first == ' ' || *first == '\t') {
+        first++;
+      }
+      if (*first == '\0') {
+        fprintf(stderr, "Error: Addition requires two operands.\n");
+        continue;
+      }
+
+      // Split first and second operand by whitespace.
+      char *second = first;
+      while (*second != '\0' && *second != ' ' && *second != '\t') {
+        second++;
+      }
+      if (*second == '\0') {
+        fprintf(stderr, "Error: Addition requires two operands.\n");
+        continue;
+      }
+      *second = '\0';
+      second++;
+      while (*second == ' ' || *second == '\t') {
+        second++;
+      }
+      if (*second == '\0') {
+        fprintf(stderr, "Error: Addition requires two operands.\n");
+        continue;
+      }
+
+      // Determine base: use explicit prefix on each operand if present,
+      // otherwise default to base 10.
+      base_t base = 10;
+
+      char first_buf[256];
+      char second_buf[256];
+
+      // Helper lambda-like blocks via local scopes.
+      {
+        char *hash_pos = strchr(first, '#');
+        if (hash_pos != NULL) {
+          *hash_pos = '\0';
+          int parsed_base = atoi(first);
+          if (parsed_base < 2 || parsed_base > 36) {
+            fprintf(stderr,
+                    "Error: Base for first operand must be between 2 and 36\n");
+            continue;
+          }
+          base = (base_t)parsed_base;
+          strncpy(first_buf, hash_pos + 1, sizeof(first_buf) - 1);
+          first_buf[sizeof(first_buf) - 1] = '\0';
+        } else {
+          strncpy(first_buf, first, sizeof(first_buf) - 1);
+          first_buf[sizeof(first_buf) - 1] = '\0';
+        }
+      }
+
+      {
+        char *hash_pos = strchr(second, '#');
+        if (hash_pos != NULL) {
+          *hash_pos = '\0';
+          int parsed_base = atoi(second);
+          if (parsed_base < 2 || parsed_base > 36) {
+            fprintf(
+                stderr,
+                "Error: Base for second operand must be between 2 and 36\n");
+            continue;
+          }
+          if (base == 10) {
+            base = (base_t)parsed_base;
+          } else if (base != (base_t)parsed_base) {
+            fprintf(stderr, "Error: Both operands must use the same base.\n");
+            continue;
+          }
+          strncpy(second_buf, hash_pos + 1, sizeof(second_buf) - 1);
+          second_buf[sizeof(second_buf) - 1] = '\0';
+        } else {
+          strncpy(second_buf, second, sizeof(second_buf) - 1);
+          second_buf[sizeof(second_buf) - 1] = '\0';
+        }
+      }
+
+      number_t a = initialize_number_from_string(first_buf, base);
+      number_t b = initialize_number_from_string(second_buf, base);
+
+      if (!a.proto.digits || !b.proto.digits) {
+        fprintf(stderr, "Error: Failed to parse operands for addition.\n");
+        deallocate_number(&a);
+        deallocate_number(&b);
+        continue;
+      }
+
+      number_t sum = number_add(&a, &b);
+
+      printf("  ");
+      display_number(&sum);
+
+      deallocate_number(&a);
+      deallocate_number(&b);
+      deallocate_number(&sum);
+      continue;
+    }
+
+    // Fallback: single number echo, as before.
     char *hash_pos = strchr(input, '#');
     char number_str[256];
     unsigned int base = 10; // Default base
 
     if (hash_pos != NULL) {
-      // Found base# prefix
-      *hash_pos = '\0'; // Temporarily null-terminate to parse base
+      *hash_pos = '\0';
       int parsed_base = atoi(input);
-
       if (parsed_base < 2 || parsed_base > 36) {
         fprintf(stderr, "Error: Base must be between 2 and 36\n");
         continue;
       }
-
       base = parsed_base;
       strncpy(number_str, hash_pos + 1, sizeof(number_str) - 1);
       number_str[sizeof(number_str) - 1] = '\0';
     } else {
-      // No base prefix, use base 10
       strncpy(number_str, input, sizeof(number_str) - 1);
       number_str[sizeof(number_str) - 1] = '\0';
     }
 
-    // READ: Create number from string
     number_t num = initialize_number_from_string(number_str, (base_t)base);
 
-    // EVALUATE: (not implemented yet - placeholder for future)
-    // For now, just pass through the number unchanged
-
-    // PRINT: Display the number representation
     printf("  ");
     display_number(&num);
-
-    // Deallocate before next iteration
     deallocate_number(&num);
   }
 }
