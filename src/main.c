@@ -68,6 +68,7 @@ number_t number_int_mul_abs(const number_t *a, const number_t *b);
 void number_int_divmod_abs(const number_t *numerator,
                            const number_t *denominator, number_t *quotient,
                            number_t *remainder);
+number_t number_int_gcd_abs(const number_t *a, const number_t *b);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -592,6 +593,78 @@ void number_int_divmod_abs(const number_t *numerator,
   remainder->decimal_length = 0;
   remainder->repeating_length = 0;
   normalize_number(remainder);
+}
+
+// Integer-only greatest common divisor: returns gcd(|a|, |b|) as a
+// non-negative integer in the same base, using Euclid's algorithm and
+// number_int_divmod_abs. Both a and b must be non-negative integers with
+// decimal_length == 0 and repeating_length == 0.
+number_t number_int_gcd_abs(const number_t *a, const number_t *b) {
+  number_t zero = allocate_number_array(a ? a->proto.base : 10, 1);
+  if (!zero.proto.digits) {
+    return zero;
+  }
+  zero.proto.digits[0] = 0;
+  zero.is_negative = false;
+  zero.decimal_length = 0;
+  zero.repeating_length = 0;
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(stderr,
+            "Error: number_int_gcd_abs requires two valid integers in the "
+            "same base.\n");
+    return zero;
+  }
+
+  if (a->decimal_length != 0 || b->decimal_length != 0 ||
+      a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr, "Error: number_int_gcd_abs expects integer operands.\n");
+    return zero;
+  }
+
+  base_t base = a->proto.base;
+
+  // Make local copies to avoid mutating inputs.
+  number_t x = allocate_number_array(base, a->proto.length);
+  number_t y = allocate_number_array(base, b->proto.length);
+  if (!x.proto.digits || !y.proto.digits) {
+    deallocate_number(&x);
+    deallocate_number(&y);
+    return zero;
+  }
+  for (size_t i = 0; i < a->proto.length; i++) {
+    x.proto.digits[i] = a->proto.digits[i];
+  }
+  x.proto.length = a->proto.length;
+  x.is_negative = false;
+  x.decimal_length = 0;
+  x.repeating_length = 0;
+  normalize_number(&x);
+
+  for (size_t i = 0; i < b->proto.length; i++) {
+    y.proto.digits[i] = b->proto.digits[i];
+  }
+  y.proto.length = b->proto.length;
+  y.is_negative = false;
+  y.decimal_length = 0;
+  y.repeating_length = 0;
+  normalize_number(&y);
+
+  // Euclid's algorithm: gcd(x, y) with x, y >= 0.
+  while (!(y.proto.length == 1 && y.proto.digits[0] == 0)) {
+    number_t q, r;
+    number_int_divmod_abs(&x, &y, &q, &r);
+    deallocate_number(&q);
+    deallocate_number(&x);
+    x = y;
+    y = r;
+  }
+
+  // x now holds the gcd.
+  deallocate_number(&y);
+  deallocate_number(&zero);
+  return x;
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -1544,6 +1617,26 @@ int main(int argc, char *argv[]) {
   deallocate_number(&dden5);
   deallocate_number(&dq5);
   deallocate_number(&dr5);
+
+  // Integer gcd: gcd(48, 18) = 6
+  printf("Int GCD 1: gcd(48, 18) (base 10): ");
+  number_t g1a = initialize_number_from_string("48", 10);
+  number_t g1b = initialize_number_from_string("18", 10);
+  number_t g1 = number_int_gcd_abs(&g1a, &g1b);
+  display_number(&g1);
+  deallocate_number(&g1a);
+  deallocate_number(&g1b);
+  deallocate_number(&g1);
+
+  // Integer gcd: gcd(0, 42) = 42
+  printf("Int GCD 2: gcd(0, 42) (base 10): ");
+  number_t g2a = initialize_number_from_string("0", 10);
+  number_t g2b = initialize_number_from_string("42", 10);
+  number_t g2 = number_int_gcd_abs(&g2a, &g2b);
+  display_number(&g2);
+  deallocate_number(&g2a);
+  deallocate_number(&g2b);
+  deallocate_number(&g2);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
