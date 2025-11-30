@@ -60,6 +60,11 @@ typedef struct {
 number_t initialize_number_from_string(const char *str, base_t base);
 void normalize_number(number_t *num);
 
+// Integer-only helpers on number_t (decimal_length == 0, repeating_length == 0)
+number_t number_int_add_abs(const number_t *a, const number_t *b);
+number_t number_int_sub_abs(const number_t *a, const number_t *b,
+                            bool negative_result);
+
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
 // have been removed in favor of pure big-digit operations.
@@ -111,6 +116,146 @@ void deallocate_number(number_t *num) {
     free(num->proto.digits);
     num->proto.digits = NULL;
   }
+}
+
+// Integer-only absolute addition: assumes both a and b are non-negative
+// integers in the same base with decimal_length == 0 and
+// repeating_length == 0. Result is a non-negative integer number_t.
+number_t number_int_add_abs(const number_t *a, const number_t *b) {
+  number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(stderr, "Error: number_int_add_abs requires two valid integers in "
+                    "the same base.\n");
+    return result;
+  }
+
+  if (a->decimal_length != 0 || b->decimal_length != 0 ||
+      a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr, "Error: number_int_add_abs expects integer operands.\n");
+    return result;
+  }
+
+  base_t base = a->proto.base;
+  size_t max_len =
+      (a->proto.length > b->proto.length) ? a->proto.length : b->proto.length;
+
+  result = allocate_number_array(base, max_len + 1);
+  if (!result.proto.digits) {
+    return result;
+  }
+
+  long carry = 0;
+  size_t ri = max_len + 1;
+
+  for (size_t k = 0; k < max_len; k++) {
+    size_t a_pos =
+        (a->proto.length > k) ? (a->proto.length - 1 - k) : (size_t)-1;
+    size_t b_pos =
+        (b->proto.length > k) ? (b->proto.length - 1 - k) : (size_t)-1;
+    long da = (a->proto.length > k && a_pos < a->proto.length)
+                  ? (long)a->proto.digits[a_pos]
+                  : 0;
+    long db = (b->proto.length > k && b_pos < b->proto.length)
+                  ? (long)b->proto.digits[b_pos]
+                  : 0;
+    long sum = da + db + carry;
+    carry = sum / base;
+    long digit = sum % base;
+    if (digit < 0) {
+      digit += base;
+      carry--;
+    }
+    ri--;
+    result.proto.digits[ri] = (value_t)digit;
+  }
+
+  if (carry != 0) {
+    ri--;
+    result.proto.digits[ri] = (value_t)carry;
+  }
+
+  size_t used = (max_len + 1) - ri;
+  for (size_t i = 0; i < used; i++) {
+    result.proto.digits[i] = result.proto.digits[ri + i];
+  }
+
+  result.proto.length = used;
+  result.is_negative = false;
+  result.decimal_length = 0;
+  result.repeating_length = 0;
+
+  normalize_number(&result);
+  return result;
+}
+
+// Integer-only absolute subtraction: computes |a| - |b| where |a| >= |b|,
+// with all values treated as non-negative integers. The negative_result flag
+// allows the caller to control the sign on the resulting number_t.
+number_t number_int_sub_abs(const number_t *a, const number_t *b,
+                            bool negative_result) {
+  number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
+
+  if (!a || !b || !a->proto.digits || !b->proto.digits ||
+      a->proto.base != b->proto.base) {
+    fprintf(stderr, "Error: number_int_sub_abs requires two valid integers in "
+                    "the same base.\n");
+    return result;
+  }
+
+  if (a->decimal_length != 0 || b->decimal_length != 0 ||
+      a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr, "Error: number_int_sub_abs expects integer operands.\n");
+    return result;
+  }
+
+  base_t base = a->proto.base;
+  size_t max_len =
+      (a->proto.length > b->proto.length) ? a->proto.length : b->proto.length;
+
+  result = allocate_number_array(base, max_len);
+  if (!result.proto.digits) {
+    return result;
+  }
+
+  long borrow = 0;
+  size_t ri = max_len;
+
+  for (size_t k = 0; k < max_len; k++) {
+    size_t a_pos =
+        (a->proto.length > k) ? (a->proto.length - 1 - k) : (size_t)-1;
+    size_t b_pos =
+        (b->proto.length > k) ? (b->proto.length - 1 - k) : (size_t)-1;
+    long da = (a->proto.length > k && a_pos < a->proto.length)
+                  ? (long)a->proto.digits[a_pos]
+                  : 0;
+    long db = (b->proto.length > k && b_pos < b->proto.length)
+                  ? (long)b->proto.digits[b_pos]
+                  : 0;
+    long diff = da - db - borrow;
+    if (diff < 0) {
+      diff += base;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    ri--;
+    result.proto.digits[ri] = (value_t)diff;
+  }
+
+  size_t used = max_len - ri;
+  for (size_t i = 0; i < used; i++) {
+    result.proto.digits[i] = result.proto.digits[ri + i];
+  }
+
+  result.proto.length = used;
+  result.is_negative = negative_result;
+  result.decimal_length = 0;
+  result.repeating_length = 0;
+
+  normalize_number(&result);
+  return result;
 }
 
 // Compare absolute values of two numbers in the same base.
