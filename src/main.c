@@ -929,13 +929,13 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
   int cmp = compare_int_abs(&n1_mag, &n2_mag);
 
   if (a->num.is_negative == b->num.is_negative) {
-    // Same sign: add magnitudes, keep that sign.
+    // Same sign: (sgn) * (|a|d_b + |b|d_a) / (d_a d_b)
     number_t n_sum_mag = number_int_add_abs(&n1_mag, &n2_mag);
     n_sum_mag.is_negative = a->num.is_negative;
     tmp = rational_make_from_ints(&n_sum_mag, &den_prod);
     deallocate_number(&n_sum_mag);
   } else {
-    // Opposite signs: subtract smaller magnitude from larger.
+    // Opposite signs: (dominant_sign) * (|b|d_a - |a|d_b) / (d_a d_b)
     if (cmp == 0) {
       // Exact cancellation to 0/1.
       number_t zero = allocate_number_array(base, 1);
@@ -948,13 +948,13 @@ rational_t rational_add(const rational_t *a, const rational_t *b) {
       tmp = rational_make_from_ints(&zero, &den_prod);
       deallocate_number(&zero);
     } else if (cmp > 0) {
-      // |a| > |b|: result sign is sign(a).
+      // |a|d_b > |b|d_a: result sign is sign(a).
       number_t n_diff_mag = number_int_sub_abs(&n1_mag, &n2_mag, false);
       n_diff_mag.is_negative = a->num.is_negative;
       tmp = rational_make_from_ints(&n_diff_mag, &den_prod);
       deallocate_number(&n_diff_mag);
     } else {
-      // |b| > |a|: result sign is sign(b).
+      // |b|d_a > |a|d_b: result sign is sign(b).
       number_t n_diff_mag = number_int_sub_abs(&n2_mag, &n1_mag, false);
       n_diff_mag.is_negative = b->num.is_negative;
       tmp = rational_make_from_ints(&n_diff_mag, &den_prod);
@@ -2462,27 +2462,27 @@ int main(int argc, char *argv[]) {
   deallocate_number(&r7x);
 
   // Simple rational subtraction: 1/2 - 1/3 = 1/6
-  printf("Rational 8: 1/2 - 1/3 (base 10): ");
-  number_t r8n1 = initialize_number_from_string("1", 10);
-  number_t r8d1 = initialize_number_from_string("2", 10);
-  number_t r8n2 = initialize_number_from_string("1", 10);
-  number_t r8d2 = initialize_number_from_string("3", 10);
-  rational_t r8a = rational_make_from_ints(&r8n1, &r8d1);
-  rational_t r8b = rational_make_from_ints(&r8n2, &r8d2);
-  rational_normalize(&r8a);
-  rational_normalize(&r8b);
-  rational_t r8 = rational_sub(&r8a, &r8b);
+  printf("Rational 9: 1/2 - 1/3 (base 10): ");
+  number_t r9n1 = initialize_number_from_string("1", 10);
+  number_t r9d1 = initialize_number_from_string("2", 10);
+  number_t r9n2 = initialize_number_from_string("1", 10);
+  number_t r9d2 = initialize_number_from_string("3", 10);
+  rational_t r9a = rational_make_from_ints(&r9n1, &r9d1);
+  rational_t r9b = rational_make_from_ints(&r9n2, &r9d2);
+  rational_normalize(&r9a);
+  rational_normalize(&r9b);
+  rational_t r9 = rational_sub(&r9a, &r9b);
   printf("num = ");
-  display_number(&r8.num);
+  display_number(&r9.num);
   printf("den = ");
-  display_number(&r8.den);
-  rational_deallocate(&r8);
-  rational_deallocate(&r8a);
-  rational_deallocate(&r8b);
-  deallocate_number(&r8n1);
-  deallocate_number(&r8d1);
-  deallocate_number(&r8n2);
-  deallocate_number(&r8d2);
+  display_number(&r9.den);
+  rational_deallocate(&r9);
+  rational_deallocate(&r9a);
+  rational_deallocate(&r9b);
+  deallocate_number(&r9n1);
+  deallocate_number(&r9d1);
+  deallocate_number(&r9n2);
+  deallocate_number(&r9d2);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
