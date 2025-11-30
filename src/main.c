@@ -70,6 +70,7 @@ typedef struct {
 // Forward declarations that depend on number_t
 number_t initialize_number_from_string(const char *str, base_t base);
 void normalize_number(number_t *num);
+number_t number_add(const number_t *a, const number_t *b);
 
 // Integer-only helpers on number_t (decimal_length == 0, repeating_length == 0)
 number_t number_int_add_abs(const number_t *a, const number_t *b);
@@ -85,6 +86,7 @@ number_t number_int_gcd_abs(const number_t *a, const number_t *b);
 rational_t rational_make_from_ints(const number_t *num, const number_t *den);
 void rational_deallocate(rational_t *r);
 void rational_normalize(rational_t *r);
+rational_t rational_add(const rational_t *a, const rational_t *b);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -856,6 +858,84 @@ void rational_normalize(rational_t *r) {
 
   normalize_number(&r->num);
   normalize_number(&r->den);
+}
+
+// Add two rationals a and b (same base), returning a normalized result.
+// Uses integer-only helpers: |a| * |b| and adds/subtracts with sign logic.
+rational_t rational_add(const rational_t *a, const rational_t *b) {
+  rational_t result;
+
+  // Default to 0/1 in base 10 in case of early error.
+  result.num = allocate_number_array(10, 1);
+  result.den = allocate_number_array(10, 1);
+  if (result.num.proto.digits) {
+    result.num.proto.digits[0] = 0;
+    result.num.is_negative = false;
+    result.num.decimal_length = 0;
+    result.num.repeating_length = 0;
+  }
+  if (result.den.proto.digits) {
+    result.den.proto.digits[0] = 1;
+    result.den.is_negative = false;
+    result.den.decimal_length = 0;
+    result.den.repeating_length = 0;
+  }
+
+  if (!a || !b || !a->num.proto.digits || !b->num.proto.digits ||
+      !a->den.proto.digits || !b->den.proto.digits) {
+    fprintf(stderr, "Error: rational_add requires valid rationals.\n");
+    return result;
+  }
+
+  if (a->num.proto.base != b->num.proto.base ||
+      a->den.proto.base != b->den.proto.base ||
+      a->num.proto.base != a->den.proto.base) {
+    fprintf(stderr, "Error: rational_add requires same-base components.\n");
+    return result;
+  }
+
+  // Ensure integer-only components.
+  if (a->num.decimal_length != 0 || a->den.decimal_length != 0 ||
+      b->num.decimal_length != 0 || b->den.decimal_length != 0 ||
+      a->num.repeating_length != 0 || a->den.repeating_length != 0 ||
+      b->num.repeating_length != 0 || b->den.repeating_length != 0) {
+    fprintf(
+        stderr,
+        "Error: rational_add expects integer-only numerators/denominators.\n");
+    return result;
+  }
+
+  base_t base = a->num.proto.base;
+
+  // Compute common denominator: den = a.den * b.den
+  number_t den_prod = number_int_mul_abs(&a->den, &b->den);
+
+  // Compute scaled numerators: n1 = a.num * b.den, n2 = b.num * a.den
+  number_t n1_abs = number_int_mul_abs(&a->num, &b->den);
+  number_t n2_abs = number_int_mul_abs(&b->num, &a->den);
+
+  // Apply signs to n1_abs and n2_abs logically.
+  n1_abs.is_negative = a->num.is_negative;
+  n2_abs.is_negative = b->num.is_negative;
+
+  // Now add the two signed integers via number_add.
+  number_t n_sum = number_add(&n1_abs, &n2_abs);
+
+  // Build result rational from n_sum / den_prod.
+  rational_t tmp = rational_make_from_ints(&n_sum, &den_prod);
+  rational_deallocate(&result);
+  result = tmp;
+
+  rational_normalize(&result);
+
+  deallocate_number(&den_prod);
+  deallocate_number(&n1_abs);
+  deallocate_number(&n2_abs);
+  deallocate_number(&n_sum);
+
+  (void)base; // base currently unused, kept for future extensions.
+
+  return result;
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -1862,6 +1942,52 @@ int main(int argc, char *argv[]) {
   rational_deallocate(&r2);
   deallocate_number(&r2n);
   deallocate_number(&r2d);
+
+  // Rational addition: 1/2 + 1/3 = 5/6
+  printf("Rational 3: 1/2 + 1/3 (base 10): ");
+  number_t r3n1 = initialize_number_from_string("1", 10);
+  number_t r3d1 = initialize_number_from_string("2", 10);
+  number_t r3n2 = initialize_number_from_string("1", 10);
+  number_t r3d2 = initialize_number_from_string("3", 10);
+  rational_t r3a = rational_make_from_ints(&r3n1, &r3d1);
+  rational_t r3b = rational_make_from_ints(&r3n2, &r3d2);
+  rational_normalize(&r3a);
+  rational_normalize(&r3b);
+  rational_t r3 = rational_add(&r3a, &r3b);
+  printf("num = ");
+  display_number(&r3.num);
+  printf("den = ");
+  display_number(&r3.den);
+  rational_deallocate(&r3);
+  rational_deallocate(&r3a);
+  rational_deallocate(&r3b);
+  deallocate_number(&r3n1);
+  deallocate_number(&r3d1);
+  deallocate_number(&r3n2);
+  deallocate_number(&r3d2);
+
+  // Rational addition with cancellation: -1/2 + 1/2 = 0/1
+  printf("Rational 4: -1/2 + 1/2 (base 10): ");
+  number_t r4n1 = initialize_number_from_string("-1", 10);
+  number_t r4d1 = initialize_number_from_string("2", 10);
+  number_t r4n2 = initialize_number_from_string("1", 10);
+  number_t r4d2 = initialize_number_from_string("2", 10);
+  rational_t r4a = rational_make_from_ints(&r4n1, &r4d1);
+  rational_t r4b = rational_make_from_ints(&r4n2, &r4d2);
+  rational_normalize(&r4a);
+  rational_normalize(&r4b);
+  rational_t r4 = rational_add(&r4a, &r4b);
+  printf("num = ");
+  display_number(&r4.num);
+  printf("den = ");
+  display_number(&r4.den);
+  rational_deallocate(&r4);
+  rational_deallocate(&r4a);
+  rational_deallocate(&r4b);
+  deallocate_number(&r4n1);
+  deallocate_number(&r4d1);
+  deallocate_number(&r4n2);
+  deallocate_number(&r4d2);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
