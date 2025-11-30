@@ -28,10 +28,6 @@ typedef uint8_t value_t;
 
 typedef uint8_t base_t;
 
-// Forward declarations
-glyph_t value_to_glyph(value_t value);
-value_t glyph_to_value(glyph_t glyph);
-
 typedef struct {
   base_t base;     // Base of the number system
   value_t *digits; // Pointer to an array of digits (values)
@@ -56,6 +52,21 @@ typedef struct {
   size_t repeating_length;
 } number_t;
 
+// Forward declarations
+glyph_t value_to_glyph(value_t value);
+value_t glyph_to_value(glyph_t glyph);
+
+// Minimal rational layer built on top of integer-only number_t values.
+// Invariants:
+// - num and den share the same base
+// - den represents a strictly positive integer (no sign, no decimals)
+// - num may be negative; sign is always carried by num
+// - Both num and den are kept in normalized, integer-only form
+typedef struct {
+  number_t num; // numerator
+  number_t den; // denominator (always > 0)
+} rational_t;
+
 // Forward declarations that depend on number_t
 number_t initialize_number_from_string(const char *str, base_t base);
 void normalize_number(number_t *num);
@@ -69,6 +80,11 @@ void number_int_divmod_abs(const number_t *numerator,
                            const number_t *denominator, number_t *quotient,
                            number_t *remainder);
 number_t number_int_gcd_abs(const number_t *a, const number_t *b);
+
+// Rational helpers
+rational_t rational_make_from_ints(const number_t *num, const number_t *den);
+void rational_deallocate(rational_t *r);
+void rational_normalize(rational_t *r);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -665,6 +681,181 @@ number_t number_int_gcd_abs(const number_t *a, const number_t *b) {
   deallocate_number(&y);
   deallocate_number(&zero);
   return x;
+}
+
+//======================= RATIONAL HELPERS =======================//
+
+// Construct a rational from two integer-only numbers. The sign is moved
+// entirely onto the numerator; the denominator is made positive. Both
+// components are copied so the caller can free the originals.
+rational_t rational_make_from_ints(const number_t *num, const number_t *den) {
+  rational_t r;
+
+  // Initialize to a safe default 0/1 in base 10 in case of errors.
+  r.num = allocate_number_array(10, 1);
+  r.den = allocate_number_array(10, 1);
+  if (r.num.proto.digits) {
+    r.num.proto.digits[0] = 0;
+    r.num.is_negative = false;
+    r.num.decimal_length = 0;
+    r.num.repeating_length = 0;
+  }
+  if (r.den.proto.digits) {
+    r.den.proto.digits[0] = 1;
+    r.den.is_negative = false;
+    r.den.decimal_length = 0;
+    r.den.repeating_length = 0;
+  }
+
+  if (!num || !den || !num->proto.digits || !den->proto.digits ||
+      num->proto.base != den->proto.base) {
+    fprintf(stderr,
+            "Error: rational_make_from_ints requires same-base integers.\n");
+    return r;
+  }
+
+  if (num->decimal_length != 0 || den->decimal_length != 0 ||
+      num->repeating_length != 0 || den->repeating_length != 0) {
+    fprintf(stderr,
+            "Error: rational_make_from_ints expects integer-only operands.\n");
+    return r;
+  }
+
+  // Ensure denominator is not zero.
+  bool den_is_zero = true;
+  for (size_t i = 0; i < den->proto.length; i++) {
+    if (den->proto.digits[i] != 0) {
+      den_is_zero = false;
+      break;
+    }
+  }
+  if (den_is_zero) {
+    fprintf(stderr, "Error: rational_make_from_ints denominator is zero.\n");
+    return r;
+  }
+
+  base_t base = num->proto.base;
+
+  // Copy numerator.
+  deallocate_number(&r.num);
+  r.num = allocate_number_array(base, num->proto.length);
+  if (!r.num.proto.digits) {
+    return r;
+  }
+  for (size_t i = 0; i < num->proto.length; i++) {
+    r.num.proto.digits[i] = num->proto.digits[i];
+  }
+  r.num.proto.length = num->proto.length;
+  r.num.is_negative = num->is_negative;
+  r.num.decimal_length = 0;
+  r.num.repeating_length = 0;
+  normalize_number(&r.num);
+
+  // Copy denominator, strip sign (denominator always positive).
+  deallocate_number(&r.den);
+  r.den = allocate_number_array(base, den->proto.length);
+  if (!r.den.proto.digits) {
+    return r;
+  }
+  for (size_t i = 0; i < den->proto.length; i++) {
+    r.den.proto.digits[i] = den->proto.digits[i];
+  }
+  r.den.proto.length = den->proto.length;
+  r.den.is_negative = false;
+  r.den.decimal_length = 0;
+  r.den.repeating_length = 0;
+  normalize_number(&r.den);
+
+  // Move any negative sign from the denominator onto the numerator.
+  // (Currently initialize_number_from_string never sets den negative,
+  // but this keeps the invariant explicit.)
+  if (den->is_negative) {
+    r.num.is_negative = !r.num.is_negative;
+  }
+
+  return r;
+}
+
+void rational_deallocate(rational_t *r) {
+  if (!r) {
+    return;
+  }
+  deallocate_number(&r->num);
+  deallocate_number(&r->den);
+}
+
+// Normalize a rational by dividing numerator and denominator by their gcd,
+// and ensuring the denominator is strictly positive.
+void rational_normalize(rational_t *r) {
+  if (!r || !r->num.proto.digits || !r->den.proto.digits) {
+    return;
+  }
+
+  if (r->num.decimal_length != 0 || r->den.decimal_length != 0 ||
+      r->num.repeating_length != 0 || r->den.repeating_length != 0) {
+    fprintf(stderr,
+            "Error: rational_normalize expects integer-only components.\n");
+    return;
+  }
+
+  base_t base = r->num.proto.base;
+
+  // If numerator is zero, canonicalize to 0/1.
+  bool num_is_zero = true;
+  for (size_t i = 0; i < r->num.proto.length; i++) {
+    if (r->num.proto.digits[i] != 0) {
+      num_is_zero = false;
+      break;
+    }
+  }
+  if (num_is_zero) {
+    deallocate_number(&r->num);
+    deallocate_number(&r->den);
+    r->num = allocate_number_array(base, 1);
+    r->den = allocate_number_array(base, 1);
+    if (r->num.proto.digits) {
+      r->num.proto.digits[0] = 0;
+      r->num.is_negative = false;
+      r->num.decimal_length = 0;
+      r->num.repeating_length = 0;
+    }
+    if (r->den.proto.digits) {
+      r->den.proto.digits[0] = 1;
+      r->den.is_negative = false;
+      r->den.decimal_length = 0;
+      r->den.repeating_length = 0;
+    }
+    return;
+  }
+
+  // Compute gcd of absolute values.
+  number_t abs_num = r->num;
+  abs_num.is_negative = false;
+  number_t g = number_int_gcd_abs(&abs_num, &r->den);
+
+  // Divide numerator and denominator by gcd.
+  number_t qn, rn;
+  number_int_divmod_abs(&r->num, &g, &qn, &rn);
+  number_t qd, rd;
+  number_int_divmod_abs(&r->den, &g, &qd, &rd);
+
+  // We expect zero remainders; keep quotient parts.
+  deallocate_number(&r->num);
+  deallocate_number(&r->den);
+  deallocate_number(&rn);
+  deallocate_number(&rd);
+  deallocate_number(&g);
+  r->num = qn;
+  r->den = qd;
+
+  // Ensure denominator sign is positive, move sign to numerator.
+  if (r->den.is_negative) {
+    r->den.is_negative = false;
+    r->num.is_negative = !r->num.is_negative;
+  }
+
+  normalize_number(&r->num);
+  normalize_number(&r->den);
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -1637,6 +1828,40 @@ int main(int argc, char *argv[]) {
   deallocate_number(&g2a);
   deallocate_number(&g2b);
   deallocate_number(&g2);
+
+  //===========================================================
+  // SECTION: Testing rational helpers
+  //===========================================================
+
+  printf("\n=== Testing rational helpers ===\n");
+
+  // Rational normalize: 48/18 -> 8/3
+  printf("Rational 1: 48/18 (base 10): ");
+  number_t r1n = initialize_number_from_string("48", 10);
+  number_t r1d = initialize_number_from_string("18", 10);
+  rational_t r1 = rational_make_from_ints(&r1n, &r1d);
+  rational_normalize(&r1);
+  printf("num = ");
+  display_number(&r1.num);
+  printf("den = ");
+  display_number(&r1.den);
+  rational_deallocate(&r1);
+  deallocate_number(&r1n);
+  deallocate_number(&r1d);
+
+  // Rational normalize: 0/42 -> 0/1
+  printf("Rational 2: 0/42 (base 10): ");
+  number_t r2n = initialize_number_from_string("0", 10);
+  number_t r2d = initialize_number_from_string("42", 10);
+  rational_t r2 = rational_make_from_ints(&r2n, &r2d);
+  rational_normalize(&r2);
+  printf("num = ");
+  display_number(&r2.num);
+  printf("den = ");
+  display_number(&r2.den);
+  rational_deallocate(&r2);
+  deallocate_number(&r2n);
+  deallocate_number(&r2d);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
