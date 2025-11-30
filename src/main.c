@@ -359,7 +359,6 @@ number_t number_int_mul_abs(const number_t *a, const number_t *b) {
   return result;
 }
 
-
 // Compare absolute values of two numbers in the same base.
 // Returns: -1 if |a| < |b|, 0 if equal, 1 if |a| > |b|.
 int compare_abs(const number_t *a, const number_t *b) {
