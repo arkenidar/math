@@ -2381,6 +2381,30 @@ int main(int argc, char *argv[]) {
   deallocate_number(&r3n2);
   deallocate_number(&r3d2);
 
+  // Mixed-sign rational addition: -1/3 + 1/2 = 1/6
+  printf("Rational 8: -1/3 + 1/2 (base 10): ");
+  number_t r8n1 = initialize_number_from_string("-1", 10);
+  number_t r8d1 = initialize_number_from_string("3", 10);
+  number_t r8n2 = initialize_number_from_string("1", 10);
+  number_t r8d2 = initialize_number_from_string("2", 10);
+  rational_t r8a = rational_make_from_ints(&r8n1, &r8d1);
+  rational_t r8b = rational_make_from_ints(&r8n2, &r8d2);
+  rational_normalize(&r8a);
+  rational_normalize(&r8b);
+  rational_t r8 = rational_add(&r8a, &r8b);
+  printf("num = ");
+  display_number(&r8.num);
+  printf("den = ");
+  display_number(&r8.den);
+  rational_deallocate(&r8);
+  rational_deallocate(&r8a);
+  rational_deallocate(&r8b);
+  deallocate_number(&r8n1);
+  deallocate_number(&r8d1);
+  deallocate_number(&r8n2);
+  deallocate_number(&r8d2);
+  deallocate_number(&r8d2);
+
   // Rational subtraction with cancellation: 1/2 - 1/2 = 0/1
   printf("Rational 4: 1/2 - 1/2 (base 10): ");
   number_t r4n1 = initialize_number_from_string("1", 10);
