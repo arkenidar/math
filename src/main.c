@@ -839,6 +839,9 @@ void rational_normalize(rational_t *r) {
   abs_num.is_negative = false;
   number_t g = number_int_gcd_abs(&abs_num, &r->den);
 
+  // Preserve original sign before divmod
+  bool original_num_sign = r->num.is_negative;
+
   // Divide numerator and denominator by gcd.
   number_t qn, rn;
   number_int_divmod_abs(&r->num, &g, &qn, &rn);
@@ -853,6 +856,9 @@ void rational_normalize(rational_t *r) {
   deallocate_number(&g);
   r->num = qn;
   r->den = qd;
+
+  // Restore original numerator sign
+  r->num.is_negative = original_num_sign;
 
   // Ensure denominator sign is positive, move sign to numerator.
   if (r->den.is_negative) {
