@@ -88,6 +88,7 @@ void rational_deallocate(rational_t *r);
 void rational_normalize(rational_t *r);
 rational_t rational_add(const rational_t *a, const rational_t *b);
 rational_t rational_from_terminating_number(const number_t *x);
+rational_t rational_from_repeating_number(const number_t *x);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -1039,6 +1040,181 @@ rational_t rational_from_terminating_number(const number_t *x) {
   }
 
   rational_normalize(&r);
+  return r;
+}
+
+// Convert a repeating-decimal number_t into a rational_t using digit
+// arithmetic. Assumes x->repeating_length > 0.
+rational_t rational_from_repeating_number(const number_t *x) {
+  rational_t r;
+
+  // Default 0/1 in base 10 for error cases.
+  r.num = allocate_number_array(10, 1);
+  r.den = allocate_number_array(10, 1);
+  if (r.num.proto.digits) {
+    r.num.proto.digits[0] = 0;
+    r.num.is_negative = false;
+    r.num.decimal_length = 0;
+    r.num.repeating_length = 0;
+  }
+  if (r.den.proto.digits) {
+    r.den.proto.digits[0] = 1;
+    r.den.is_negative = false;
+    r.den.decimal_length = 0;
+    r.den.repeating_length = 0;
+  }
+
+  if (!x || !x->proto.digits) {
+    fprintf(stderr,
+            "Error: rational_from_repeating_number requires a valid number.\n");
+    return r;
+  }
+
+  if (x->repeating_length == 0) {
+    fprintf(stderr,
+            "Error: rational_from_repeating_number expects repeating part.\n");
+    return r;
+  }
+
+  base_t base = x->proto.base;
+
+  // Split lengths.
+  size_t total_len = x->proto.length;
+  size_t frac_len = x->decimal_length;
+  size_t rep_len = x->repeating_length;
+  if (frac_len < rep_len) {
+    fprintf(stderr, "Error: invalid repeating configuration in number_t.\n");
+    return r;
+  }
+  size_t nonrep_len = frac_len - rep_len;
+  size_t int_len = total_len - frac_len;
+
+  // Build integer M: all digits up to end of non-repeating fractional part.
+  size_t M_len = int_len + nonrep_len;
+  number_t M = allocate_number_array(base, M_len);
+  if (!M.proto.digits) {
+    return r;
+  }
+  for (size_t i = 0; i < M_len; i++) {
+    M.proto.digits[i] = x->proto.digits[i];
+  }
+  M.proto.length = M_len;
+  M.is_negative = false;
+  M.decimal_length = 0;
+  M.repeating_length = 0;
+  normalize_number(&M);
+
+  // Build integer N: all digits through one full repeating block.
+  size_t N_len = total_len;
+  number_t N = allocate_number_array(base, N_len);
+  if (!N.proto.digits) {
+    deallocate_number(&M);
+    return r;
+  }
+  for (size_t i = 0; i < N_len; i++) {
+    N.proto.digits[i] = x->proto.digits[i];
+  }
+  N.proto.length = N_len;
+  N.is_negative = false;
+  N.decimal_length = 0;
+  N.repeating_length = 0;
+  normalize_number(&N);
+
+  // Compute numerator: num = N - M.
+  // Ensure |N| >= |M|; given the construction, N should be >= M.
+  number_t num_abs = number_int_sub_abs(&N, &M, false);
+  deallocate_number(&N);
+  deallocate_number(&M);
+
+  // Build denominator: den = base^{nonrep_len} * (base^{rep_len} - 1).
+
+  // Helper to compute base^k as integer number_t using number_int_mul_abs.
+  number_t pow_base = allocate_number_array(base, 1);
+  if (!pow_base.proto.digits) {
+    deallocate_number(&num_abs);
+    return r;
+  }
+  pow_base.proto.digits[0] = 1;
+  pow_base.is_negative = false;
+  pow_base.decimal_length = 0;
+  pow_base.repeating_length = 0;
+
+  number_t base_num = allocate_number_array(base, 1);
+  if (!base_num.proto.digits) {
+    deallocate_number(&num_abs);
+    deallocate_number(&pow_base);
+    return r;
+  }
+  base_num.proto.digits[0] = (value_t)base;
+  base_num.is_negative = false;
+  base_num.decimal_length = 0;
+  base_num.repeating_length = 0;
+  normalize_number(&base_num);
+
+  // pow_b_nonrep = base^{nonrep_len}
+  number_t pow_b_nonrep = pow_base;
+  for (size_t k = 0; k < nonrep_len; k++) {
+    number_t tmp = number_int_mul_abs(&pow_b_nonrep, &base_num);
+    deallocate_number(&pow_b_nonrep);
+    pow_b_nonrep = tmp;
+  }
+
+  // pow_b_rep = base^{rep_len}
+  number_t pow_b_rep = allocate_number_array(base, 1);
+  if (!pow_b_rep.proto.digits) {
+    deallocate_number(&num_abs);
+    deallocate_number(&pow_b_nonrep);
+    deallocate_number(&base_num);
+    return r;
+  }
+  pow_b_rep.proto.digits[0] = 1;
+  pow_b_rep.is_negative = false;
+  pow_b_rep.decimal_length = 0;
+  pow_b_rep.repeating_length = 0;
+  for (size_t k = 0; k < rep_len; k++) {
+    number_t tmp = number_int_mul_abs(&pow_b_rep, &base_num);
+    deallocate_number(&pow_b_rep);
+    pow_b_rep = tmp;
+  }
+
+  // pow_b_rep_minus_one = base^{rep_len} - 1
+  number_t one = allocate_number_array(base, 1);
+  if (!one.proto.digits) {
+    deallocate_number(&num_abs);
+    deallocate_number(&pow_b_nonrep);
+    deallocate_number(&pow_b_rep);
+    deallocate_number(&base_num);
+    return r;
+  }
+  one.proto.digits[0] = 1;
+  one.is_negative = false;
+  one.decimal_length = 0;
+  one.repeating_length = 0;
+
+  number_t pow_b_rep_minus_one = number_int_sub_abs(&pow_b_rep, &one, false);
+  deallocate_number(&pow_b_rep);
+  deallocate_number(&one);
+
+  // den = pow_b_nonrep * pow_b_rep_minus_one
+  number_t den_abs = number_int_mul_abs(&pow_b_nonrep, &pow_b_rep_minus_one);
+  deallocate_number(&pow_b_nonrep);
+  deallocate_number(&pow_b_rep_minus_one);
+  deallocate_number(&base_num);
+
+  // Assemble rational from num_abs and den_abs, then apply original sign.
+  rational_t tmp = rational_make_from_ints(&num_abs, &den_abs);
+  rational_deallocate(&r);
+  r = tmp;
+
+  if (x->is_negative) {
+    r.num.is_negative = !r.num.is_negative;
+  }
+
+  rational_normalize(&r);
+
+  deallocate_number(&num_abs);
+  deallocate_number(&den_abs);
+
   return r;
 }
 
@@ -2103,6 +2279,28 @@ int main(int argc, char *argv[]) {
   display_number(&r5.den);
   rational_deallocate(&r5);
   deallocate_number(&r5x);
+
+  // Rational from repeating number: 1.(3) -> 4/3 in base 10
+  printf("Rational 6: from 1.(3) (base 10): ");
+  number_t r6x = initialize_number_from_string("1.(3)", 10);
+  rational_t r6 = rational_from_repeating_number(&r6x);
+  printf("num = ");
+  display_number(&r6.num);
+  printf("den = ");
+  display_number(&r6.den);
+  rational_deallocate(&r6);
+  deallocate_number(&r6x);
+
+  // Rational from repeating number: 0.(3) -> 1/3 in base 10
+  printf("Rational 7: from 0.(3) (base 10): ");
+  number_t r7x = initialize_number_from_string("0.(3)", 10);
+  rational_t r7 = rational_from_repeating_number(&r7x);
+  printf("num = ");
+  display_number(&r7.num);
+  printf("den = ");
+  display_number(&r7.den);
+  rational_deallocate(&r7);
+  deallocate_number(&r7x);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
