@@ -60,24 +60,9 @@ typedef struct {
 number_t initialize_number_from_string(const char *str, base_t base);
 void normalize_number(number_t *num);
 
-// Simple rational representation: sign * numerator / denominator in base 10
-// (we operate on integer numerators/denominators using uint64_t where
-// possible).
-typedef struct {
-  bool is_negative;
-  uint64_t numerator;
-  uint64_t denominator;
-} rational_t;
-
-// Compute greatest common divisor
-static uint64_t gcd_u64(uint64_t a, uint64_t b) {
-  while (b != 0) {
-    uint64_t t = b;
-    b = a % b;
-    a = t;
-  }
-  return a == 0 ? 1 : a;
-}
+// NOTE: All arithmetic is intended to be expressed directly in terms of
+// number_t and its digit arrays. Any previous rational_t / uint64_t helpers
+// have been removed in favor of pure big-digit operations.
 
 // Helper: deallocate and reset number to empty/NaN-like state
 void reset_number(number_t *num) {
@@ -126,195 +111,6 @@ void deallocate_number(number_t *num) {
     free(num->proto.digits);
     num->proto.digits = NULL;
   }
-}
-
-// Convert a base-b digit sequence with decimal and repeating information into
-// a rational number (in base 10 arithmetic), using uint64_t. If the value
-// overflows uint64_t, the behavior is undefined for now.
-rational_t number_to_rational(const number_t *num) {
-  rational_t r;
-  r.is_negative = false;
-  r.numerator = 0;
-  r.denominator = 1;
-
-  if (!num || !num->proto.digits || num->proto.length == 0) {
-    return r;
-  }
-
-  base_t base = num->proto.base;
-  size_t total_len = num->proto.length;
-  size_t d = num->decimal_length;
-  size_t rlen = num->repeating_length;
-
-  // Integer and fractional decomposition uses the usual repeating-decimal
-  // formula in arbitrary base b:
-  // Let X = integer part, Y = non-repeating fractional, Z = repeating block.
-  // Then value = X + Y / b^d + Z / (b^d * (b^rlen - 1)). We implement this by
-  // turning everything into a single fraction.
-
-  // Compute integer part X and construct full digit sequence as uint64_t.
-  uint64_t value_int = 0;
-  for (size_t i = 0; i < total_len; i++) {
-    value_int = value_int * base + num->proto.digits[i];
-  }
-
-  // If there are no decimal digits and no repeating block, this is already an
-  // integer.
-  if (d == 0 && rlen == 0) {
-    r.is_negative = num->is_negative;
-    r.numerator = value_int;
-    r.denominator = 1;
-    return r;
-  }
-
-  // General case: use the standard formula with whole-number representation of
-  // the non-repeating+repeating tail.
-  size_t int_len = total_len - d;
-
-  // A = digits up to decimal point (integer part)
-  uint64_t A = 0;
-  for (size_t i = 0; i < int_len; i++) {
-    A = A * base + num->proto.digits[i];
-  }
-
-  // B_digits = integer + non-repeating fractional
-  uint64_t B = 0;
-  for (size_t i = 0; i < int_len + (d - rlen); i++) {
-    B = B * base + num->proto.digits[i];
-  }
-
-  // C_digits = integer + full fractional (non-repeating + repeating)
-  uint64_t C = 0;
-  for (size_t i = 0; i < total_len; i++) {
-    C = C * base + num->proto.digits[i];
-  }
-
-  if (rlen == 0) {
-    // Pure terminating decimal: value = C / base^d
-    uint64_t denom = 1;
-    for (size_t i = 0; i < d; i++) {
-      denom *= base;
-    }
-    uint64_t g = gcd_u64(C, denom);
-    r.is_negative = num->is_negative;
-    r.numerator = C / g;
-    r.denominator = denom / g;
-    return r;
-  }
-
-  // Repeating case in base b:
-  // value = (C - B) / (b^d - b^(d - rlen))
-  uint64_t pow_bd = 1;
-  for (size_t i = 0; i < d; i++) {
-    pow_bd *= base;
-  }
-  uint64_t pow_bdr = 1;
-  for (size_t i = 0; i < d - rlen; i++) {
-    pow_bdr *= base;
-  }
-
-  uint64_t numer = C - B;
-  uint64_t denom = pow_bd - pow_bdr;
-  uint64_t g = gcd_u64(numer, denom);
-  numer /= g;
-  denom /= g;
-
-  r.is_negative = num->is_negative;
-  r.numerator = numer;
-  r.denominator = denom;
-  return r;
-}
-
-// Add two rationals and return result in reduced form.
-rational_t rational_add(rational_t a, rational_t b) {
-  rational_t r;
-  // Convert to signed 128-bit style using int64_t where possible.
-  int64_t sa = a.is_negative ? -(int64_t)a.numerator : (int64_t)a.numerator;
-  int64_t sb = b.is_negative ? -(int64_t)b.numerator : (int64_t)b.numerator;
-
-  uint64_t denom = a.denominator * b.denominator;
-  int64_t num_signed =
-      sa * (int64_t)b.denominator + sb * (int64_t)a.denominator;
-
-  r.is_negative = (num_signed < 0);
-  uint64_t num_abs =
-      (num_signed < 0) ? (uint64_t)(-num_signed) : (uint64_t)num_signed;
-
-  uint64_t g = gcd_u64(num_abs, denom);
-  r.numerator = num_abs / g;
-  r.denominator = denom / g;
-  return r;
-}
-
-// Convert a rational back to a base-b number_t, choosing a representation
-// using a (possibly repeating) fractional part. For now we only support
-// denominators that are powers of base or factors of (base^k - 1) for small k
-// and fall back to a finite expansion up to a fixed precision.
-number_t rational_to_number(rational_t r, base_t base) {
-  // For now, handle only terminating cases where denominator is a power of
-  // base; otherwise, just emit a finite expansion with a fixed maximum length
-  // and no repeating block.
-  const size_t MAX_DIGITS = 32;
-
-  // Handle zero
-  if (r.numerator == 0) {
-    number_t zero = allocate_number_array(base, 1);
-    if (zero.proto.digits) {
-      zero.proto.digits[0] = 0;
-      zero.is_negative = false;
-      zero.decimal_length = 0;
-      zero.repeating_length = 0;
-    }
-    return zero;
-  }
-
-  // Extract integer part
-  uint64_t num = r.numerator / r.denominator;
-  uint64_t rem = r.numerator % r.denominator;
-
-  // Collect integer digits in reverse
-  value_t int_digits[MAX_DIGITS];
-  size_t int_len = 0;
-  while (num > 0 && int_len < MAX_DIGITS) {
-    value_t d = (value_t)(num % base);
-    int_digits[int_len++] = d;
-    num /= base;
-  }
-  if (int_len == 0) {
-    int_digits[int_len++] = 0;
-  }
-
-  // Fractional part: generate up to MAX_DIGITS - int_len digits.
-  value_t frac_digits[MAX_DIGITS];
-  size_t frac_len = 0;
-  while (rem != 0 && int_len + frac_len < MAX_DIGITS) {
-    rem *= base;
-    uint64_t digit = rem / r.denominator;
-    rem = rem % r.denominator;
-    frac_digits[frac_len++] = (value_t)digit;
-  }
-
-  size_t total_len = int_len + frac_len;
-  number_t num_out = allocate_number_array(base, total_len);
-  if (!num_out.proto.digits) {
-    return num_out;
-  }
-
-  // Write integer digits in correct order
-  for (size_t i = 0; i < int_len; i++) {
-    num_out.proto.digits[i] = int_digits[int_len - 1 - i];
-  }
-  // Then fractional digits
-  for (size_t i = 0; i < frac_len; i++) {
-    num_out.proto.digits[int_len + i] = frac_digits[i];
-  }
-
-  num_out.proto.length = total_len;
-  num_out.is_negative = r.is_negative;
-  num_out.decimal_length = frac_len;
-  num_out.repeating_length = 0; // conservative for now
-  normalize_number(&num_out);
-  return num_out;
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -368,8 +164,8 @@ int compare_abs(const number_t *a, const number_t *b) {
 }
 
 // Core digit-wise addition of same-sign numbers in the same base.
-// Handles decimal alignment and ignores repeating sections (assumes
-// they are already expanded/truncated as desired by the caller).
+// Handles decimal alignment and currently requires no repeating sections
+// (repeating_length must be 0 for both operands).
 number_t add_same_sign(const number_t *a, const number_t *b) {
   number_t result = allocate_number_array(a ? a->proto.base : 10, 0);
 
@@ -382,6 +178,12 @@ number_t add_same_sign(const number_t *a, const number_t *b) {
   }
 
   base_t base = a->proto.base;
+
+  if (a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr,
+            "Error: add_same_sign does not yet support repeating decimals.\n");
+    return result;
+  }
 
   size_t a_int_len = a->proto.length - a->decimal_length;
   size_t b_int_len = b->proto.length - b->decimal_length;
@@ -468,6 +270,13 @@ number_t sub_same_sign_abs(const number_t *a, const number_t *b,
   }
 
   base_t base = a->proto.base;
+
+  if (a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(
+        stderr,
+        "Error: sub_same_sign_abs does not yet support repeating decimals.\n");
+    return result;
+  }
 
   size_t a_int_len = a->proto.length - a->decimal_length;
   size_t b_int_len = b->proto.length - b->decimal_length;
@@ -561,12 +370,39 @@ number_t number_add(const number_t *a, const number_t *b) {
     fprintf(stderr, "Error: number_add received empty number.\n");
     return allocate_number_array(a->proto.base, 0);
   }
-  // Convert both to rationals in base 10 arithmetic, add them, then convert
-  // back to base a->proto.base.
-  rational_t ra = number_to_rational(a);
-  rational_t rb = number_to_rational(b);
-  rational_t rs = rational_add(ra, rb);
-  return rational_to_number(rs, a->proto.base);
+
+  // For now, we only support terminating decimals (no repeating sections).
+  if (a->repeating_length != 0 || b->repeating_length != 0) {
+    fprintf(stderr,
+            "Error: number_add does not yet support repeating decimals.\n");
+    return allocate_number_array(a->proto.base, 0);
+  }
+
+  // Same sign: do addition and keep sign.
+  if (a->is_negative == b->is_negative) {
+    return add_same_sign(a, b);
+  }
+
+  // Different signs: compute difference of absolute values.
+  int cmp = compare_abs(a, b);
+  if (cmp == 0) {
+    number_t zero = allocate_number_array(a->proto.base, 1);
+    if (zero.proto.digits) {
+      zero.proto.digits[0] = 0;
+      zero.is_negative = false;
+      zero.decimal_length = 0;
+      zero.repeating_length = 0;
+    }
+    return zero;
+  }
+
+  if (cmp > 0) {
+    // |a| > |b|, result sign is sign of a.
+    return sub_same_sign_abs(a, b, a->is_negative);
+  } else {
+    // |b| > |a|, result sign is sign of b.
+    return sub_same_sign_abs(b, a, b->is_negative);
+  }
 }
 
 // Normalize number by removing leading and trailing insignificant zeros
