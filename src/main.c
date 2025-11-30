@@ -65,6 +65,9 @@ number_t number_int_add_abs(const number_t *a, const number_t *b);
 number_t number_int_sub_abs(const number_t *a, const number_t *b,
                             bool negative_result);
 number_t number_int_mul_abs(const number_t *a, const number_t *b);
+void number_int_divmod_abs(const number_t *numerator,
+                           const number_t *denominator, number_t *quotient,
+                           number_t *remainder);
 
 // NOTE: All arithmetic is intended to be expressed directly in terms of
 // number_t and its digit arrays. Any previous rational_t / uint64_t helpers
@@ -357,6 +360,238 @@ number_t number_int_mul_abs(const number_t *a, const number_t *b) {
 
   normalize_number(&result);
   return result;
+}
+
+// Internal helper: compare absolute values of two integer-only numbers
+// (no decimals, no repeating). Returns -1, 0, or 1.
+static int compare_int_abs(const number_t *a, const number_t *b) {
+  if (!a || !b || !a->proto.digits || !b->proto.digits) {
+    return 0;
+  }
+
+  if (a->proto.length < b->proto.length) {
+    return -1;
+  } else if (a->proto.length > b->proto.length) {
+    return 1;
+  }
+
+  for (size_t i = 0; i < a->proto.length; i++) {
+    value_t da = a->proto.digits[i];
+    value_t db = b->proto.digits[i];
+    if (da < db) {
+      return -1;
+    } else if (da > db) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Internal helper: integer-only scalar multiplication of a non-negative
+// integer 'src' by a single digit factor in [0, base). Result is stored
+// into 'dst', which must already be allocated with at least src.length+1
+// digits and same base.
+static void int_scalar_mul(const number_t *src, value_t factor, number_t *dst) {
+  base_t base = src->proto.base;
+  size_t len = src->proto.length;
+
+  // Initialize dst as zero of appropriate length.
+  dst->proto.base = base;
+  dst->proto.length = len + 1;
+  for (size_t i = 0; i < dst->proto.length; i++) {
+    dst->proto.digits[i] = 0;
+  }
+
+  long carry = 0;
+  for (size_t k = 0; k < len; k++) {
+    size_t pos = len - 1 - k;
+    long prod = (long)src->proto.digits[pos] * (long)factor + carry;
+    dst->proto.digits[pos + 1] = (value_t)(prod % base);
+    carry = prod / base;
+  }
+  dst->proto.digits[0] = (value_t)carry;
+
+  dst->is_negative = false;
+  dst->decimal_length = 0;
+  dst->repeating_length = 0;
+  normalize_number(dst);
+}
+
+// Integer-only absolute division with remainder: computes
+//   quotient = floor(|numerator| / |denominator|)
+//   remainder = |numerator| - quotient * |denominator|
+// Both inputs must be non-negative integers in the same base with
+// decimal_length == 0 and repeating_length == 0.
+// The outputs are allocated via allocate_number_array and must be
+// deallocated by the caller using deallocate_number.
+void number_int_divmod_abs(const number_t *numerator,
+                           const number_t *denominator, number_t *quotient,
+                           number_t *remainder) {
+  if (!quotient || !remainder) {
+    fprintf(
+        stderr,
+        "Error: number_int_divmod_abs requires non-null output pointers.\n");
+    return;
+  }
+
+  // Initialize outputs to empty numbers in base 10 by default.
+  *quotient = allocate_number_array(10, 0);
+  *remainder = allocate_number_array(10, 0);
+
+  if (!numerator || !denominator || !numerator->proto.digits ||
+      !denominator->proto.digits ||
+      numerator->proto.base != denominator->proto.base) {
+    fprintf(stderr, "Error: number_int_divmod_abs requires two valid integers "
+                    "in the same base.\n");
+    return;
+  }
+
+  if (numerator->decimal_length != 0 || denominator->decimal_length != 0 ||
+      numerator->repeating_length != 0 || denominator->repeating_length != 0) {
+    fprintf(stderr, "Error: number_int_divmod_abs expects integer operands.\n");
+    return;
+  }
+
+  base_t base = numerator->proto.base;
+
+  // Check for zero denominator.
+  bool denom_is_zero = true;
+  for (size_t i = 0; i < denominator->proto.length; i++) {
+    if (denominator->proto.digits[i] != 0) {
+      denom_is_zero = false;
+      break;
+    }
+  }
+  if (denom_is_zero) {
+    fprintf(stderr, "Error: number_int_divmod_abs division by zero.\n");
+    return;
+  }
+
+  // Quick check: if numerator < denominator, quotient = 0, remainder =
+  // numerator.
+  int cmp0 = compare_int_abs(numerator, denominator);
+  if (cmp0 < 0) {
+    *quotient = allocate_number_array(base, 1);
+    if (quotient->proto.digits) {
+      quotient->proto.digits[0] = 0;
+      quotient->is_negative = false;
+      quotient->decimal_length = 0;
+      quotient->repeating_length = 0;
+    }
+    *remainder = allocate_number_array(base, numerator->proto.length);
+    if (remainder->proto.digits) {
+      for (size_t i = 0; i < numerator->proto.length; i++) {
+        remainder->proto.digits[i] = numerator->proto.digits[i];
+      }
+      remainder->proto.length = numerator->proto.length;
+      remainder->is_negative = false;
+      remainder->decimal_length = 0;
+      remainder->repeating_length = 0;
+      normalize_number(remainder);
+    }
+    return;
+  }
+
+  // Allocate quotient and remainder with proper base.
+  *quotient = allocate_number_array(base, numerator->proto.length);
+  *remainder = allocate_number_array(base, numerator->proto.length + 1);
+  if (!quotient->proto.digits || !remainder->proto.digits) {
+    return;
+  }
+
+  // Initialize quotient digits to zero.
+  for (size_t i = 0; i < quotient->proto.length; i++) {
+    quotient->proto.digits[i] = 0;
+  }
+
+  // Initialize remainder to zero.
+  remainder->proto.length = 1;
+  remainder->proto.digits[0] = 0;
+  remainder->is_negative = false;
+  remainder->decimal_length = 0;
+  remainder->repeating_length = 0;
+
+  size_t n_len = numerator->proto.length;
+
+  // Long division from most significant digit to least (MSB-first).
+  for (size_t i = 0; i < n_len; i++) {
+    // remainder = remainder * base + current_digit
+    long carry = numerator->proto.digits[i];
+    for (size_t k = 0; k < remainder->proto.length; k++) {
+      size_t pos = remainder->proto.length - 1 - k;
+      long val = (long)remainder->proto.digits[pos] * (long)base + carry;
+      remainder->proto.digits[pos] = (value_t)(val % base);
+      carry = val / base;
+    }
+    if (carry > 0) {
+      // Shift digits right by one to accommodate extra carry.
+      for (size_t k = remainder->proto.length; k > 0; k--) {
+        remainder->proto.digits[k] = remainder->proto.digits[k - 1];
+      }
+      remainder->proto.digits[0] = (value_t)carry;
+      remainder->proto.length += 1;
+    }
+    normalize_number(remainder);
+
+    // Binary search for largest q_digit in [0, base-1] such that
+    // denominator * q_digit <= remainder.
+    value_t q_digit = 0;
+    value_t low = 0;
+    value_t high = base - 1;
+
+    // Temporary product holder for denom * q_candidate.
+    number_t prod = allocate_number_array(base, denominator->proto.length + 1);
+    if (!prod.proto.digits) {
+      return;
+    }
+
+    while (low <= high) {
+      value_t mid = (value_t)((low + high) / 2);
+      int_scalar_mul(denominator, mid, &prod);
+      int cmp = compare_int_abs(&prod, remainder);
+      if (cmp <= 0) {
+        q_digit = mid;
+        if (mid == base - 1) {
+          break;
+        }
+        low = mid + 1;
+      } else {
+        if (mid == 0) {
+          break;
+        }
+        high = mid - 1;
+      }
+    }
+
+    deallocate_number(&prod);
+
+    // Store quotient digit.
+    quotient->proto.digits[i] = q_digit;
+
+    // remainder = remainder - denominator * q_digit
+    if (q_digit != 0) {
+      number_t dq = allocate_number_array(base, denominator->proto.length + 1);
+      if (!dq.proto.digits) {
+        return;
+      }
+      int_scalar_mul(denominator, q_digit, &dq);
+      number_t tmp = number_int_sub_abs(remainder, &dq, false);
+      deallocate_number(remainder);
+      *remainder = tmp;
+      deallocate_number(&dq);
+    }
+  }
+
+  // Final normalization of quotient and remainder.
+  quotient->is_negative = false;
+  quotient->decimal_length = 0;
+  quotient->repeating_length = 0;
+  normalize_number(quotient);
+
+  remainder->is_negative = false;
+  remainder->decimal_length = 0;
+  remainder->repeating_length = 0;
+  normalize_number(remainder);
 }
 
 // Compare absolute values of two numbers in the same base.
@@ -1234,6 +1469,81 @@ int main(int argc, char *argv[]) {
   deallocate_number(&m1);
   deallocate_number(&m2);
   deallocate_number(&mprod);
+
+  // Integer divmod: 100 / 7 = 14 remainder 2
+  printf("Int DivMod 1: 100 / 7 (base 10):\n");
+  number_t dnum1 = initialize_number_from_string("100", 10);
+  number_t dden1 = initialize_number_from_string("7", 10);
+  number_t dq1, dr1;
+  number_int_divmod_abs(&dnum1, &dden1, &dq1, &dr1);
+  printf("  q = ");
+  display_number(&dq1);
+  printf("  r = ");
+  display_number(&dr1);
+  deallocate_number(&dnum1);
+  deallocate_number(&dden1);
+  deallocate_number(&dq1);
+  deallocate_number(&dr1);
+
+  // Integer divmod: 7 / 7 = 1 remainder 0
+  printf("Int DivMod 2: 7 / 7 (base 10):\n");
+  number_t dnum2 = initialize_number_from_string("7", 10);
+  number_t dden2 = initialize_number_from_string("7", 10);
+  number_t dq2, dr2;
+  number_int_divmod_abs(&dnum2, &dden2, &dq2, &dr2);
+  printf("  q = ");
+  display_number(&dq2);
+  printf("  r = ");
+  display_number(&dr2);
+  deallocate_number(&dnum2);
+  deallocate_number(&dden2);
+  deallocate_number(&dq2);
+  deallocate_number(&dr2);
+
+  // Integer divmod: 0 / 7 = 0 remainder 0
+  printf("Int DivMod 3: 0 / 7 (base 10):\n");
+  number_t dnum3 = initialize_number_from_string("0", 10);
+  number_t dden3 = initialize_number_from_string("7", 10);
+  number_t dq3, dr3;
+  number_int_divmod_abs(&dnum3, &dden3, &dq3, &dr3);
+  printf("  q = ");
+  display_number(&dq3);
+  printf("  r = ");
+  display_number(&dr3);
+  deallocate_number(&dnum3);
+  deallocate_number(&dden3);
+  deallocate_number(&dq3);
+  deallocate_number(&dr3);
+
+  // Integer divmod: 5 / 10 = 0 remainder 5 (numerator < denominator)
+  printf("Int DivMod 4: 5 / 10 (base 10):\n");
+  number_t dnum4 = initialize_number_from_string("5", 10);
+  number_t dden4 = initialize_number_from_string("10", 10);
+  number_t dq4, dr4;
+  number_int_divmod_abs(&dnum4, &dden4, &dq4, &dr4);
+  printf("  q = ");
+  display_number(&dq4);
+  printf("  r = ");
+  display_number(&dr4);
+  deallocate_number(&dnum4);
+  deallocate_number(&dden4);
+  deallocate_number(&dq4);
+  deallocate_number(&dr4);
+
+  // Integer divmod: 1A / 3 in base 16 => 26 / 3 = 8 remainder 2
+  printf("Int DivMod 5: 1A / 3 (base 16):\n");
+  number_t dnum5 = initialize_number_from_string("1A", 16);
+  number_t dden5 = initialize_number_from_string("3", 16);
+  number_t dq5, dr5;
+  number_int_divmod_abs(&dnum5, &dden5, &dq5, &dr5);
+  printf("  q = ");
+  display_number(&dq5);
+  printf("  r = ");
+  display_number(&dr5);
+  deallocate_number(&dnum5);
+  deallocate_number(&dden5);
+  deallocate_number(&dq5);
+  deallocate_number(&dr5);
 
   //===========================================================
   // SECTION: Testing initialize_number_from_string
