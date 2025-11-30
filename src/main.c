@@ -1099,6 +1099,32 @@ int main(int argc, char *argv[]) {
   printf("\n");
 
   //===========================================================
+  // SECTION: Testing integer helpers (number_int_add_abs/sub_abs)
+  //===========================================================
+
+  printf("\n=== Testing integer helpers ===\n");
+
+  // Integer add: 123 + 456 = 579
+  printf("Int Add 1: 123 + 456 (base 10): ");
+  number_t i1 = initialize_number_from_string("123", 10);
+  number_t i2 = initialize_number_from_string("456", 10);
+  number_t isum = number_int_add_abs(&i1, &i2);
+  display_number(&isum);
+  deallocate_number(&i1);
+  deallocate_number(&i2);
+  deallocate_number(&isum);
+
+  // Integer sub: 1000 - 1 = 999
+  printf("Int Sub 1: 1000 - 1 (base 10): ");
+  number_t j1 = initialize_number_from_string("1000", 10);
+  number_t j2 = initialize_number_from_string("1", 10);
+  number_t jdiff = number_int_sub_abs(&j1, &j2, false);
+  display_number(&jdiff);
+  deallocate_number(&j1);
+  deallocate_number(&j2);
+  deallocate_number(&jdiff);
+
+  //===========================================================
   // SECTION: Testing initialize_number_from_string
   //===========================================================
 
